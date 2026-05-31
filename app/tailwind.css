@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.205 0 0);
+    --primary: oklch(0.922 0 0);
+    --border: oklch(1 0 0 / 10%);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+}
+
+/* ─── Vault Loader ───────────────────────────────────────────────────────────*/
+@keyframes vault-breathe {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 12px #B0834320);
+  }
+  50% {
+    transform: scale(1.07);
+    filter: drop-shadow(0 0 32px #B0834370) drop-shadow(0 0 60px #6A481C40);
+  }
+}
+
+.vault-loader {
+  animation: vault-breathe 2.8s ease-in-out infinite;
+  transform-origin: center;
+}
+
+/* ─── Vault Scrollbar ──────────────────────────────────────────────────────── */
+.vault-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.vault-scroll::-webkit-scrollbar-track {
+  background: #0E151D;
+  border-radius: 99px;
+}
+.vault-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #6A481C 0%, #B08343 50%, #6A481C 100%);
+  border-radius: 99px;
+  border: 1px solid #442E17;
+}
+.vault-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #8F672E 0%, #B08343 50%, #8F672E 100%);
+}
+/* Firefox */
+.vault-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #8F672E #0E151D;
+}
