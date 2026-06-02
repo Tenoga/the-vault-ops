@@ -677,7 +677,7 @@ export default function PedidosPage() {
         {/* Lista items */}
         {order ? (
           <div className="vault-scroll" style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 900, margin: "0 auto", width: "100%" }}>
               {order.items.map((item) => (
                 <OrderItemCard
                   key={item.variant_id}

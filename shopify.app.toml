@@ -2,7 +2,7 @@
 
 client_id = "b211912cc164f52945bfe40a2831a3bb"
 name = "TheVaultOps"
-application_url = "https://example.com"
+application_url = "https://semifinal-bronze-alphabet.ngrok-free.dev"
 embedded = true
 
 [access_scopes]
@@ -45,8 +45,7 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ "https://semifinal-bronze-alphabet.ngrok-free.dev/api/auth" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
