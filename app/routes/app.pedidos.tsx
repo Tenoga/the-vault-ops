@@ -113,7 +113,12 @@ function ProviderSelector({
             <span style={{ fontSize: 14, color: "#5C84A0", minWidth: 120, fontFamily: "'Literata', serif" }}>{prov}</span>
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <button style={btnStyle(val <= 0)} disabled={val <= 0}
-                onClick={() => onChange({ ...allocation, [prov]: val - 1 })}>−</button>
+                onClick={() => {
+                  const next = { ...allocation };
+                  if (val - 1 <= 0) delete next[prov];
+                  else next[prov] = val - 1;
+                  onChange(next);
+                }}>−</button>
               <span style={{
                 width: 36, textAlign: "center", fontSize: 16, fontWeight: 700,
                 color: "#e8d5b7", fontFamily: "'Philosopher', serif",
@@ -433,7 +438,10 @@ export default function PedidosPage() {
     const body = {
       order_name: order!.order_name,
       dry_run: dryRun,
-      allocations: Object.entries(allocations).map(([variant_id, providers]) => ({ variant_id, providers })),
+      allocations: Object.entries(allocations).map(([variant_id, providers]) => ({
+        variant_id,
+        providers: Object.fromEntries(Object.entries(providers).filter(([, qty]) => qty > 0)),
+      })),
       gestionados: Object.entries(gestionados).filter(([, v]) => v).map(([variant_id]) => variant_id),
     };
     try {
@@ -444,6 +452,12 @@ export default function PedidosPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
+      if (data.status !== "completed") {
+        const detail = data.message
+          ?? (Array.isArray(data.errors) ? data.errors.join(" · ") : null)
+          ?? `El backend respondió con estado "${data.status}"`;
+        throw new Error(detail);
+      }
       setSuccessMsg(dryRun
         ? "✓ Dry run exitoso — sin cambios reales guardados"
         : "✓ Pedido procesado y guardado correctamente");
