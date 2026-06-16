@@ -36,6 +36,18 @@ export default function BotsHub() {
   return (
     <div style={{ fontFamily: "'Literata', Georgia, serif", color: "#e8d5b7" }}>
 
+      {/* Hover de las cards disponibles: elevación + glow del borde según el acento */}
+      <style>{`
+        .bot-card-on { cursor: pointer; }
+        .bot-card-on:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 12px 28px #00000055;
+          border-color: var(--accent);
+        }
+        .bot-card-on:hover .bot-card-titulo { color: #fff; }
+        .bot-card-on:active { transform: translateY(-1px); }
+      `}</style>
+
       {/* Header */}
       <div style={{ marginBottom: 28 }}>
         <h2 style={{ fontFamily: "'Philosopher', serif", fontSize: 22, fontWeight: 700, color: "#e8d5b7", margin: 0 }}>
@@ -52,7 +64,9 @@ export default function BotsHub() {
           const card = (
             <div
               key={bot.nombre}
+              className={bot.disponible ? "bot-card-on" : undefined}
               style={{
+                "--accent": bot.accent,
                 background: "#0E1D2B",
                 border: `1px solid ${bot.accent}40`,
                 borderTop: `3px solid ${bot.accent}`,
@@ -60,8 +74,8 @@ export default function BotsHub() {
                 padding: "20px 18px",
                 height: "100%",
                 opacity: bot.disponible ? 1 : 0.5,
-                transition: "all 0.15s",
-              }}
+                transition: "transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease",
+              } as React.CSSProperties}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                 <span style={{ fontSize: 28 }}>{bot.emoji}</span>
@@ -81,12 +95,13 @@ export default function BotsHub() {
                   </span>
                 )}
               </div>
-              <h3 style={{
+              <h3 className="bot-card-titulo" style={{
                 fontFamily: "'Philosopher', serif",
                 fontSize: 16,
                 fontWeight: 700,
                 color: "#e8d5b7",
                 margin: "0 0 8px",
+                transition: "color 0.15s ease",
               }}>
                 {bot.nombre}
               </h3>
@@ -97,7 +112,7 @@ export default function BotsHub() {
           );
 
           return bot.disponible ? (
-            <Link key={bot.nombre} to={bot.to} style={{ textDecoration: "none" }}>
+            <Link key={bot.nombre} to={bot.to} style={{ textDecoration: "none", display: "block" }}>
               {card}
             </Link>
           ) : (

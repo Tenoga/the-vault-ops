@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 // Paleta de marca
@@ -8,13 +8,29 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 type Alcance = "all_products" | "collection_products" | "specific_product" | "all_zero_price";
 
+interface CartaDetalle {
+  titulo: string;
+  set_name: string | null;
+  image_url: string | null;
+  precio_anterior: number | null;
+  precio_nuevo: number | null;
+  estado: string | null;
+}
+
+interface CartaPreview {
+  titulo: string;
+  set_name: string | null;
+  image_url: string | null;
+  precio_anterior: number | null;
+}
+
 interface Job {
   job_id: string;
   alcance: Alcance;
   filtro: string[] | string | null;
   aplicar: boolean;
   notificar: boolean;
-  estado: "en_cola" | "ejecutando" | "completado" | "error";
+  estado: "en_cola" | "ejecutando" | "completado" | "error" | "cancelado";
   fase: string | null;
   total: number;
   procesadas: number;
@@ -24,6 +40,8 @@ interface Job {
   porcentaje?: number;
   eta_segundos?: number | null;
   carta_actual: string | null;
+  carta_actual_detalle?: CartaDetalle | null;
+  proximas?: CartaPreview[];
   creado: string;
   iniciado: string | null;
   finalizado: string | null;
@@ -53,7 +71,7 @@ const ALCANCES: { value: Alcance; label: string }[] = [
 
 const FASES: Record<string, string> = {
   cargando_cache: "Cargando cache de precios…",
-  consultando_shopify: "Trayendo cartas desde Shopify (puede tardar varios minutos)…",
+  consultando_shopify: "Trayendo cartas desde Shopify (3 minutos aprox)…",
   procesando: "Comparando precios contra SCG…",
   guardando_cache: "Guardando cache…",
   finalizado: "Finalizado",
@@ -64,6 +82,7 @@ const ESTADO_COLOR: Record<string, { bg: string; border: string; text: string }>
   ejecutando: { bg: "#122F4380", border: "#24445D", text: "#93c5fd" },
   completado: { bg: "#8F672E40", border: "#8F672E", text: "#e8d5b7" },
   error: { bg: "#2a0e0e", border: "#7f1d1d", text: "#fca5a5" },
+  cancelado: { bg: "#3a2f1f", border: "#6A481C", text: "#d6b88a" },
 };
 
 const ALCANCE_LABEL: Record<string, string> = Object.fromEntries(
@@ -72,10 +91,14 @@ const ALCANCE_LABEL: Record<string, string> = Object.fromEntries(
 
 function formatearEta(segundos: number | null | undefined): string {
   if (segundos == null) return "calculando…";
-  if (segundos < 60) return `≈ ${segundos}s`;
-  const m = Math.floor(segundos / 60);
+  const h = Math.floor(segundos / 3600);
+  const m = Math.floor((segundos % 3600) / 60);
   const s = segundos % 60;
-  return `≈ ${m}m ${s}s`;
+  const partes: string[] = [];
+  if (h) partes.push(`${h}h`);
+  if (h || m) partes.push(`${m}m`);
+  partes.push(`${s}s`);
+  return `≈ ${partes.join(" ")}`;
 }
 
 function formatearFecha(iso: string): string {
@@ -91,6 +114,18 @@ function formatearCOP(valor: number): string {
   return `${signo} $ ${Math.round(Math.abs(valor)).toLocaleString("es-CO")}`;
 }
 
+function normalizarProductId(input: string): string {
+  const valor = input.trim();
+  if (!valor) return valor;
+  if (valor.startsWith("gid://shopify/Product/")) return valor;
+
+  // Acepta también la URL del admin (.../products/123) o el número pelado
+  const match = valor.match(/(\d+)\s*$/);
+  if (match) return `gid://shopify/Product/${match[1]}`;
+
+  return valor;
+}
+
 function formatearFiltro(j: Pick<Job, "alcance" | "filtro">): string {
   if (j.alcance === "collection_products" && Array.isArray(j.filtro)) return j.filtro.join(", ");
   if (j.alcance === "specific_product" && typeof j.filtro === "string") return j.filtro;
@@ -104,12 +139,16 @@ export default function PreciosPage() {
   const [coleccionTexto, setColeccionTexto] = useState("");
   const [productId, setProductId] = useState("");
   const [aplicar, setAplicar] = useState(true);
-  const [notificar, setNotificar] = useState(false);
+  const [notificar, setNotificar] = useState(true);
   const [lanzando, setLanzando] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const [resultado, setResultado] = useState<JobResult | null>(null);
   const [historial, setHistorial] = useState<Job[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [cancelSolicitado, setCancelSolicitado] = useState(false);
+  // Estela de cartas ya procesadas, acumulada en el cliente desde el polling
+  // (el backend solo expone la carta actual + las próximas).
+  const [trail, setTrail] = useState<CartaDetalle[]>([]);
 
   const cargarHistorial = useCallback(async () => {
     try {
@@ -126,7 +165,7 @@ export default function PreciosPage() {
 
   // Polling del job activo cada 3s hasta que termine
   useEffect(() => {
-    if (!job || job.estado === "completado" || job.estado === "error") return;
+    if (!job || job.estado === "completado" || job.estado === "error" || job.estado === "cancelado") return;
 
     const timer = setInterval(async () => {
       try {
@@ -135,7 +174,16 @@ export default function PreciosPage() {
         const j: Job = await r.json();
         setJob(j);
 
-        if (j.estado === "completado" || j.estado === "error") {
+        // Acumular la carta actual en la estela (si cambió respecto a la última)
+        const det = j.carta_actual_detalle;
+        if (det && det.titulo) {
+          setTrail((prev) => {
+            if (prev.length && prev[prev.length - 1].titulo === det.titulo) return prev;
+            return [...prev, det].slice(-4);
+          });
+        }
+
+        if (j.estado === "completado" || j.estado === "error" || j.estado === "cancelado") {
           const rr = await fetch(`/api/precios/jobs/${j.job_id}?result=1`);
           if (rr.ok) setResultado(await rr.json());
           cargarHistorial();
@@ -157,7 +205,7 @@ export default function PreciosPage() {
         payload.coleccion = coleccionTexto.split(",").map((s) => s.trim()).filter(Boolean);
       }
       if (alcance === "specific_product") {
-        payload.product_id = productId.trim();
+        payload.product_id = normalizarProductId(productId);
       }
 
       const r = await fetch("/api/precios/scan", {
@@ -168,6 +216,8 @@ export default function PreciosPage() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`);
       setResultado(null);
+      setTrail([]);
+      setCancelSolicitado(false);
       setJob(data);
       cargarHistorial();
     } catch (e: any) {
@@ -177,11 +227,25 @@ export default function PreciosPage() {
     }
   }
 
+  async function cancelarEscaneo() {
+    if (!job) return;
+    setCancelSolicitado(true);
+    try {
+      const r = await fetch(`/api/precios/jobs/${job.job_id}/cancelar`, { method: "POST" });
+      if (r.ok) setJob(await r.json());
+      else setCancelSolicitado(false); // falló: permitir reintentar
+    } catch {
+      setCancelSolicitado(false);
+    }
+  }
+
   async function verJob(j: Job) {
     setError(null);
     setResultado(null);
+    setTrail([]);
+    setCancelSolicitado(false);
     setJob(j);
-    if (j.estado === "completado" || j.estado === "error") {
+    if (j.estado === "completado" || j.estado === "error" || j.estado === "cancelado") {
       try {
         const r = await fetch(`/api/precios/jobs/${j.job_id}?result=1`);
         if (r.ok) setResultado(await r.json());
@@ -195,6 +259,8 @@ export default function PreciosPage() {
     setJob(null);
     setResultado(null);
     setError(null);
+    setTrail([]);
+    setCancelSolicitado(false);
   }
 
   const puedeIniciar =
@@ -219,9 +285,20 @@ export default function PreciosPage() {
           </p>
         </div>
         {job && (
-          <button onClick={nuevoEscaneo} style={botonSecundario}>
-            ＋ Nuevo escaneo
-          </button>
+          <div style={{ display: "flex", gap: 10 }}>
+            {(job.estado === "ejecutando" || job.estado === "en_cola") && (
+              <button
+                onClick={cancelarEscaneo}
+                disabled={cancelSolicitado}
+                style={{ ...botonCancelar, opacity: cancelSolicitado ? 0.6 : 1, cursor: cancelSolicitado ? "default" : "pointer" }}
+              >
+                {cancelSolicitado ? "Cancelando…" : "⏹ Cancelar"}
+              </button>
+            )}
+            <button onClick={nuevoEscaneo} style={botonSecundario}>
+              ＋ Nuevo escaneo
+            </button>
+          </div>
         )}
       </div>
 
@@ -273,22 +350,26 @@ export default function PreciosPage() {
           {alcance === "specific_product" && (
             <input
               type="text"
-              placeholder="gid://shopify/Product/..."
+              placeholder="Pega el ID, la URL del admin o el gid://shopify/Product/... — cualquiera sirve"
               value={productId}
               onChange={(e) => setProductId(e.target.value)}
               style={inputStyle}
             />
           )}
 
-          <div style={{ display: "flex", gap: 20, alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
-            <label style={checkboxLabel}>
-              <input type="checkbox" checked={aplicar} onChange={(e) => setAplicar(e.target.checked)} />
-              Aplicar directo a Shopify (si no, solo calcula y muestra diferencias)
-            </label>
-            <label style={checkboxLabel}>
-              <input type="checkbox" checked={notificar} onChange={(e) => setNotificar(e.target.checked)} />
-              Notificar por Telegram
-            </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 18 }}>
+            <ToggleRow
+              checked={aplicar}
+              onChange={setAplicar}
+              titulo="Aplicar directo a Shopify"
+              sub={aplicar ? "Actualiza los precios en la tienda" : "Dry-run: solo calcula y muestra diferencias"}
+            />
+            <ToggleRow
+              checked={notificar}
+              onChange={setNotificar}
+              titulo="Notificar por Telegram"
+              sub={notificar ? "Envía el resumen y los cambios al canal" : "Sin notificaciones"}
+            />
           </div>
 
           <div style={{ marginTop: 20 }}>
@@ -346,6 +427,16 @@ export default function PreciosPage() {
                 </span>
                 <span style={{ color: "#8F672E", fontWeight: 700 }}>{formatearEta(job.eta_segundos)}</span>
               </div>
+
+              {/* Carrusel de cartas: pasadas · actual · próximas */}
+              {job.carta_actual_detalle && (
+                <Carrusel
+                  trail={trail}
+                  actual={job.carta_actual_detalle}
+                  proximas={job.proximas ?? []}
+                />
+              )}
+
               <div style={{ position: "relative", width: "100%", height: 8, background: "#0E151D", borderRadius: 99, overflow: "hidden", border: "1px solid #24445D40" }}>
                 {pct === 0 ? (
                   <div style={{
@@ -387,9 +478,17 @@ export default function PreciosPage() {
             </div>
           )}
 
-          {/* Resumen final */}
-          {job.estado === "completado" && (
+          {/* Resumen final (completado o cancelado) */}
+          {(job.estado === "completado" || job.estado === "cancelado") && (
             <>
+              {job.estado === "cancelado" && (
+                <div style={{
+                  padding: "10px 16px", borderRadius: 8, background: "#3a2f1f",
+                  border: "1px solid #6A481C", color: "#d6b88a", fontSize: 13, marginBottom: 16,
+                }}>
+                  ⏹ Escaneo cancelado — se procesaron {job.procesadas} de {job.total} cartas (lo avanzado quedó guardado).
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
                 {[
                   { label: "Total", value: job.total, accent: "#24445D" },
@@ -478,6 +577,164 @@ export default function PreciosPage() {
   );
 }
 
+// ─── Carrusel de cartas procesadas ─────────────────────────────────────────────
+
+const LOGO_FALLBACK =
+  "https://cdn.shopify.com/s/files/1/0710/0029/3568/files/TheVault.jpg?v=1757364051";
+
+const MAIN_W = 220;       // ancho de la carta principal (≈ tamaño del portal de pedidos)
+const MAIN_H = 307;       // alto de la imagen (ratio carta ≈ 0.716)
+const BELT_W = 116;       // ancho de las cartas de la cinta de fondo
+const BELT_H = 162;
+
+const nombreStyle: React.CSSProperties = {
+  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+};
+
+function CartaImg({ url, w, h, radius = 8, gris }: { url: string | null; w: number; h: number; radius?: number; gris?: boolean }) {
+  return (
+    <img
+      src={url || LOGO_FALLBACK}
+      alt=""
+      loading="lazy"
+      onError={(e) => { (e.currentTarget as HTMLImageElement).src = LOGO_FALLBACK; }}
+      style={{
+        width: w, height: h, objectFit: "cover", borderRadius: radius,
+        border: "1px solid #24445D", display: "block",
+        filter: gris ? "grayscale(0.7)" : "none",
+      }}
+    />
+  );
+}
+
+function cop(n: number | null): string {
+  if (n == null) return "—";
+  return "$ " + Math.round(n).toLocaleString("es-CO");
+}
+
+function precioInfo(c: CartaDetalle) {
+  const ant = c.precio_anterior, nu = c.precio_nuevo;
+  if (c.estado === "no_encontrada") return { tipo: "no", color: "#fca5a5", glow: "none", arrow: "✗", label: "no encontrada" };
+  if (ant == null || nu == null || nu === ant) return { tipo: "igual", color: "#8F672E", glow: "none", arrow: "=", label: "sin cambio" };
+  const sube = nu > ant;
+  const color = sube ? "#39FF14" : "#FF3B3B";
+  const glow = sube
+    ? "0 0 7px #39FF14, 0 0 18px #39FF1490, 0 0 32px #39FF1450"
+    : "0 0 7px #FF3B3B, 0 0 18px #FF3B3B90, 0 0 32px #FF3B3B50";
+  return { tipo: sube ? "sube" : "baja", color, glow, arrow: sube ? "▲" : "▼", label: "" };
+}
+
+// Tarjeta principal con disolvencia (crossfade + blur) al cambiar de carta
+function MainCard({ card }: { card: CartaDetalle }) {
+  const [layers, setLayers] = useState<{ id: number; card: CartaDetalle }[]>([{ id: 0, card }]);
+  const prevTitulo = useRef(card.titulo);
+  const counter = useRef(0);
+
+  useEffect(() => {
+    if (card.titulo === prevTitulo.current) return;
+    prevTitulo.current = card.titulo;
+    counter.current += 1;
+    const id = counter.current;
+    setLayers((prev) => [prev[prev.length - 1], { id, card }]);
+    const t = setTimeout(() => setLayers((prev) => prev.filter((l) => l.id === id)), 720);
+    return () => clearTimeout(t);
+  }, [card]);
+
+  return (
+    <div style={{ position: "relative", width: MAIN_W, height: MAIN_H + 86 }}>
+      {layers.map((l, idx) => {
+        const incoming = idx === layers.length - 1;
+        const pi = precioInfo(l.card);
+        const delta = (l.card.precio_nuevo ?? 0) - (l.card.precio_anterior ?? 0);
+        const pct = l.card.precio_anterior ? (delta / l.card.precio_anterior) * 100 : 0;
+        return (
+          <div key={l.id} style={{
+            position: "absolute", inset: 0, textAlign: "center",
+            animation: `${incoming ? "tv-card-in" : "tv-card-out"} 0.72s ease forwards`,
+          }}>
+            <CartaImg url={l.card.image_url} w={MAIN_W} h={MAIN_H} radius={12} />
+            <div style={{ ...nombreStyle, fontSize: 18, fontWeight: 700, color: "#e8d5b7", fontFamily: "'Philosopher', serif", marginTop: 8 }}>
+              {l.card.titulo}
+            </div>
+            <div style={{ ...nombreStyle, fontSize: 12, color: "#8F672E" }}>{l.card.set_name}</div>
+
+            {pi.tipo === "sube" || pi.tipo === "baja" ? (
+              <div style={{ marginTop: 4 }}>
+                <span style={{ fontSize: 12, color: "#5C84A0", textDecoration: "line-through" }}>{cop(l.card.precio_anterior)}</span>
+                <div style={{ fontSize: 25, fontWeight: 900, color: pi.color, textShadow: pi.glow, fontFamily: "'Philosopher', serif", letterSpacing: 1, lineHeight: 1.15 }}>
+                  {pi.arrow} {cop(l.card.precio_nuevo)}
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: pi.color, textShadow: pi.glow }}>
+                  {delta > 0 ? "+" : "−"}{cop(Math.abs(delta))} · {delta > 0 ? "+" : "−"}{Math.abs(pct).toFixed(1)}%
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 6, fontSize: 15, fontWeight: 700, color: pi.color }}>
+                {pi.arrow} {pi.label}
+                {pi.tipo === "igual" && l.card.precio_nuevo != null ? ` · ${cop(l.card.precio_nuevo)}` : ""}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Cinta infinita de fondo con las demás cartas
+function Belt({ cards }: { cards: { image_url: string | null; titulo: string }[] }) {
+  if (cards.length === 0) return null;
+  const loop = [...cards, ...cards]; // duplicado para loop sin costura
+  return (
+    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", overflow: "hidden", opacity: 0.3 }}>
+      <div style={{ display: "flex", gap: 18, animation: "tv-belt 30s linear infinite", filter: "blur(1.5px)", paddingLeft: 18 }}>
+        {loop.map((c, i) => (
+          <div key={i} style={{ flexShrink: 0, width: BELT_W, textAlign: "center" }}>
+            <CartaImg url={c.image_url} w={BELT_W} h={BELT_H} radius={8} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Carrusel({
+  trail, actual, proximas,
+}: { trail: CartaDetalle[]; actual: CartaDetalle; proximas: CartaPreview[] }) {
+  // La estela incluye la actual (se agrega en cada poll); la quitamos del fondo.
+  const pasadas = trail.filter((c) => c.titulo !== actual.titulo).slice(-5);
+  const beltCards = [
+    ...pasadas.map((c) => ({ image_url: c.image_url, titulo: c.titulo })),
+    ...proximas.map((c) => ({ image_url: c.image_url, titulo: c.titulo })),
+  ];
+
+  return (
+    <div style={{ margin: "6px 0 20px" }}>
+      <style>{`
+        @keyframes tv-card-in { from { opacity: 0; filter: blur(14px); transform: scale(1.04); } to { opacity: 1; filter: blur(0); transform: scale(1); } }
+        @keyframes tv-card-out { from { opacity: 1; filter: blur(0); } to { opacity: 0; filter: blur(14px); } }
+        @keyframes tv-belt { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+      `}</style>
+      <div style={{
+        position: "relative", height: MAIN_H + 96, overflow: "hidden",
+        borderRadius: 12, background: "#0E151D", border: "1px solid #24445D40",
+      }}>
+        <Belt cards={beltCards} />
+        {/* Carta principal centrada, con halo oscuro que separa de la cinta */}
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{
+            padding: "8px 30px", borderRadius: 16,
+            background: "#0E151Dcc",
+            boxShadow: "0 0 50px 30px #0E151D",
+          }}>
+            <MainCard card={actual} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Estilos compartidos ──────────────────────────────────────────────────────
 
 const panel: React.CSSProperties = {
@@ -523,6 +780,18 @@ const botonSecundario: React.CSSProperties = {
   transition: "all 0.2s",
 };
 
+const botonCancelar: React.CSSProperties = {
+  padding: "10px 18px",
+  background: "#2a0e0e",
+  color: "#fca5a5",
+  border: "1px solid #7f1d1d",
+  borderRadius: 8,
+  fontFamily: "'Philosopher', serif",
+  fontWeight: 700,
+  fontSize: 13,
+  transition: "all 0.2s",
+};
+
 const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "10px 14px",
@@ -536,11 +805,34 @@ const inputStyle: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
-const checkboxLabel: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  fontSize: 13,
-  color: "#b8a07a",
-  cursor: "pointer",
-};
+function ToggleRow({
+  checked, onChange, titulo, sub,
+}: { checked: boolean; onChange: (v: boolean) => void; titulo: string; sub: string }) {
+  return (
+    <div
+      role="switch"
+      aria-checked={checked}
+      tabIndex={0}
+      onClick={() => onChange(!checked)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onChange(!checked); } }}
+      style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", outline: "none" }}
+    >
+      <div style={{
+        width: 40, height: 22, borderRadius: 99,
+        background: checked ? "#B08343" : "#122F43",
+        position: "relative", transition: "background 0.2s", flexShrink: 0,
+        border: `1px solid ${checked ? "#8F672E" : "#24445D"}`,
+      }}>
+        <div style={{
+          position: "absolute", top: 3, left: checked ? 20 : 3,
+          width: 14, height: 14, borderRadius: "50%",
+          background: "#e8d5b7", transition: "left 0.2s",
+        }} />
+      </div>
+      <div>
+        <p style={{ fontSize: 13, fontWeight: 700, color: "#e8d5b7", margin: 0, fontFamily: "'Philosopher', serif" }}>{titulo}</p>
+        <p style={{ fontSize: 11, color: "#5C84A0", margin: 0 }}>{sub}</p>
+      </div>
+    </div>
+  );
+}
