@@ -5,6 +5,11 @@ import { useState, useCallback, useEffect } from "react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface ProveedorInfo {
+  cantidad: number;
+  ultima_actualizacion?: string;
+}
+
 interface OrderItem {
   variant_id: string;
   product_id: string;
@@ -14,6 +19,7 @@ interface OrderItem {
   quantity: number;
   sku: string;
   providers: string[];
+  proveedores_cantidades: Record<string, ProveedorInfo>;
   price: number;
   gestionado: boolean;
   no_fisico: boolean;
@@ -69,6 +75,24 @@ function ProviderSelector({
     );
   }
 
+  const stockBadge = (prov: string) => {
+    const info = item.proveedores_cantidades?.[prov];
+    const cant = info?.cantidad;
+    return (
+      <span style={{
+        fontSize: 11, fontWeight: 700,
+        padding: "1px 7px", borderRadius: 20,
+        background: cant !== undefined ? "#0a1f0a" : "#122F43",
+        color: cant !== undefined ? "#39FF14" : "#5C84A0",
+        border: `1px solid ${cant !== undefined ? "#39FF1460" : "#24445D"}`,
+        fontFamily: "monospace",
+        flexShrink: 0,
+      }}>
+        {cant !== undefined ? `${cant} disp.` : "? disp."}
+      </span>
+    );
+  };
+
   if (providers.length === 1) {
     const prov = providers[0];
     const selected = allocation[prov] !== undefined;
@@ -87,7 +111,8 @@ function ProviderSelector({
           {selected && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#0E151D" }} />}
         </div>
         <span style={{ fontSize: 15, fontWeight: 700, color: "#e8d5b7", fontFamily: "'Philosopher', serif" }}>{prov}</span>
-        <span style={{ fontSize: 13, color: "#5C84A0" }}>({quantity} ud.)</span>
+        {stockBadge(prov)}
+        <span style={{ fontSize: 13, color: "#5C84A0" }}>({quantity} pedido)</span>
       </div>
     );
   }
@@ -99,9 +124,11 @@ function ProviderSelector({
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {providers.map((prov) => {
         const val = allocation[prov] ?? 0;
+        const activo = val > 0;
         const btnStyle = (disabled: boolean): React.CSSProperties => ({
-          width: 26, height: 26, borderRadius: 6, border: "1px solid #24445D",
-          background: disabled ? "#0E151D" : "#122F43",
+          width: 28, height: 28, borderRadius: 6,
+          border: `1px solid ${activo ? "#B08343" : "#24445D"}`,
+          background: disabled ? "#0E151D" : activo ? "#1a1206" : "#122F43",
           color: disabled ? "#24445D" : "#B08343",
           fontSize: 16, fontWeight: 700, lineHeight: 1,
           cursor: disabled ? "not-allowed" : "pointer",
@@ -109,19 +136,46 @@ function ProviderSelector({
           flexShrink: 0, transition: "all 0.15s", fontFamily: "'Philosopher', serif",
         });
         return (
-          <div key={prov} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 14, color: "#5C84A0", minWidth: 120, fontFamily: "'Literata', serif" }}>{prov}</span>
+          <div key={prov} style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "8px 10px", borderRadius: 8,
+            border: `1px solid ${activo ? "#8F672E" : "#24445D30"}`,
+            background: activo ? "#1a120680" : "#0E151D50",
+            transition: "all 0.2s",
+            boxShadow: activo ? "0 0 10px #8F672E25" : "none",
+          }}>
+            {/* Indicador visual */}
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+              background: activo ? "#B08343" : "#24445D",
+              boxShadow: activo ? "0 0 6px #B08343" : "none",
+              transition: "all 0.2s",
+            }} />
+            <span style={{
+              fontSize: 13, fontFamily: "'Literata', serif", flex: 1,
+              color: activo ? "#e8d5b7" : "#5C84A0",
+              fontWeight: activo ? 600 : 400,
+            }}>{prov}</span>
+            {stockBadge(prov)}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <button style={btnStyle(val <= 0)} disabled={val <= 0}
-                onClick={() => onChange({ ...allocation, [prov]: val - 1 })}>−</button>
+                onClick={() => {
+                  // Al llegar a 0 se elimina la clave: un proveedor con qty 0
+                  // en el payload hace que el backend rechace el pedido
+                  const next = { ...allocation };
+                  if (val - 1 <= 0) delete next[prov];
+                  else next[prov] = val - 1;
+                  onChange(next);
+                }}>−</button>
               <span style={{
-                width: 36, textAlign: "center", fontSize: 16, fontWeight: 700,
-                color: "#e8d5b7", fontFamily: "'Philosopher', serif",
+                width: 36, textAlign: "center", fontFamily: "'Philosopher', serif",
+                fontSize: activo ? 20 : 15, fontWeight: 700,
+                color: activo ? "#B08343" : "#24445D",
+                transition: "all 0.2s",
               }}>{val}</span>
               <button style={btnStyle(val >= quantity)} disabled={val >= quantity}
                 onClick={() => onChange({ ...allocation, [prov]: val + 1 })}>+</button>
             </div>
-            <span style={{ fontSize: 13, color: "#5C84A0" }}>ud.</span>
           </div>
         );
       })}
@@ -188,13 +242,15 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
 // ─── Order Item Card ──────────────────────────────────────────────────────────
 
 function OrderItemCard({
-  item, allocation, gestionado, onAllocationChange, onToggleGestionado,
+  item, allocation, gestionado, noFisico, onAllocationChange, onToggleGestionado, onToggleNoFisico,
 }: {
   item: OrderItem;
   allocation: ItemAllocation;
   gestionado: boolean;
+  noFisico: boolean;
   onAllocationChange: (variantId: string, alloc: ItemAllocation) => void;
   onToggleGestionado: (variantId: string) => void;
+  onToggleNoFisico: (variantId: string) => void;
 }) {
   const [lightbox, setLightbox] = useState(false);
   const { providers, quantity } = item;
@@ -204,7 +260,7 @@ function OrderItemCard({
       ? (allocation[providers[0]] ?? 0) > 0
       : totalAllocated(allocation) === quantity;
 
-  const completo = gestionado && proveedorCompleto;
+  const completo = noFisico || (gestionado && proveedorCompleto);
   const esFoilMultiple = item.finishing === "Foil" && item.quantity > 1;
   const esMultiple = item.quantity > 1;
 
@@ -215,17 +271,31 @@ function OrderItemCard({
         display: "flex", gap: 14, padding: 16, borderRadius: 12,
         border: completo
           ? "2px solid #8F672E"
-          : esFoilMultiple
-            ? "2px solid #B08343"
-            : gestionado
-              ? "1px solid #8F672E60"
-              : "1px solid #24445D50",
-        background: completo ? "#1a1206" : esFoilMultiple ? "#1a1206" : "#0E1D2B",
+          : item.finishing === "Foil" && esMultiple
+            ? "2px solid #FF00FF"
+            : item.finishing === "Foil"
+              ? "2px solid #FF00FF"
+              : esMultiple
+                ? "2px solid #39FF14"
+                : gestionado
+                  ? "1px solid #8F672E60"
+                  : "1px solid #24445D50",
+        background: completo
+          ? "#1a1206"
+          : item.finishing === "Foil"
+            ? "#1a0020"
+            : esMultiple
+              ? "#001a06"
+              : "#0E1D2B",
         boxShadow: completo
           ? "0 0 16px #8F672E25, inset 0 0 30px #6A481C10"
-          : esFoilMultiple
-            ? "0 0 18px #B0834330, inset 0 0 30px #6A481C15"
-            : "none",
+          : item.finishing === "Foil" && esMultiple
+            ? "0 0 28px #FF00FF70, 0 0 14px #39FF1450"
+            : item.finishing === "Foil"
+              ? "0 0 28px #FF00FF60, inset 0 0 30px #FF00FF10"
+              : esMultiple
+                ? "0 0 28px #39FF1460, inset 0 0 30px #39FF1410"
+                : "none",
         transition: "all 0.2s",
       }}>
       {/* Imagen */}
@@ -263,20 +333,37 @@ function OrderItemCard({
           }}>
             {item.title}
           </h3>
-          <button
-            onClick={() => onToggleGestionado(item.variant_id)}
-            style={{
-              flexShrink: 0, fontSize: 12, fontWeight: 700, cursor: "pointer",
-              color: gestionado ? "#B08343" : "#5C84A0",
-              background: gestionado ? "#1a1206" : "#122F43",
-              border: `1px solid ${gestionado ? "#8F672E" : "#24445D"}`,
-              padding: "4px 14px", borderRadius: 20,
-              fontFamily: "'Philosopher', serif",
-              transition: "all 0.2s",
-            }}
-          >
-            {gestionado ? "✓ Gestionado" : "Marcar gestionado"}
-          </button>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button
+              onClick={() => onToggleNoFisico(item.variant_id)}
+              style={{
+                fontSize: 12, fontWeight: 700, cursor: "pointer",
+                color: noFisico ? "#fff" : "#5C84A0",
+                background: noFisico ? "#7C3AED" : "#122F43",
+                border: `1px solid ${noFisico ? "#A855F7" : "#24445D"}`,
+                padding: "4px 12px", borderRadius: 20,
+                fontFamily: "'Philosopher', serif",
+                transition: "all 0.2s",
+                boxShadow: noFisico ? "0 0 10px #A855F780" : "none",
+              }}
+            >
+              {noFisico ? "👻 No físico" : "¿No físico?"}
+            </button>
+            <button
+              onClick={() => onToggleGestionado(item.variant_id)}
+              style={{
+                fontSize: 12, fontWeight: 700, cursor: "pointer",
+                color: gestionado ? "#B08343" : "#5C84A0",
+                background: gestionado ? "#1a1206" : "#122F43",
+                border: `1px solid ${gestionado ? "#8F672E" : "#24445D"}`,
+                padding: "4px 14px", borderRadius: 20,
+                fontFamily: "'Philosopher', serif",
+                transition: "all 0.2s",
+              }}
+            >
+              {gestionado ? "✓ Gestionado" : "Marcar gestionado"}
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -289,14 +376,15 @@ function OrderItemCard({
           </span>
           {item.finishing === "Foil" ? (
             <span style={{
-              fontSize: 14, fontWeight: 700,
-              padding: "4px 14px", borderRadius: 20,
-              background: "linear-gradient(90deg, #6A481C, #B08343, #8F672E)",
-              color: "#0E151D",
-              border: "1px solid #8F672E",
+              fontSize: 14, fontWeight: 900,
+              padding: "4px 16px", borderRadius: 20,
+              background: "linear-gradient(90deg, #FF00FF, #FF69FF, #FF00FF)",
+              color: "#fff",
+              border: "2px solid #FF00FF",
               fontFamily: "'Philosopher', serif",
-              boxShadow: "0 0 10px #B0834350",
-              letterSpacing: 1,
+              boxShadow: "0 0 16px #FF00FF, 0 0 32px #FF00FF80",
+              letterSpacing: 2,
+              textShadow: "0 0 8px #fff",
             }}>
               ✨ FOIL
             </span>
@@ -311,13 +399,14 @@ function OrderItemCard({
           )}
           {item.quantity > 1 && (
             <span style={{
-              fontSize: 14, fontWeight: 700, padding: "4px 14px", borderRadius: 20,
-              background: "linear-gradient(90deg, #6A481C, #B08343, #8F672E)",
-              color: "#0E151D",
-              border: "1px solid #8F672E",
+              fontSize: 15, fontWeight: 900, padding: "4px 16px", borderRadius: 20,
+              background: "#39FF14",
+              color: "#000",
+              border: "2px solid #39FF14",
               fontFamily: "'Philosopher', serif",
-              boxShadow: "0 0 10px #B0834350",
-              letterSpacing: 1,
+              boxShadow: "0 0 16px #39FF14, 0 0 32px #39FF1480",
+              letterSpacing: 2,
+              textShadow: "0 0 4px #fff",
             }}>
               ×{item.quantity}
             </span>
@@ -358,7 +447,8 @@ export default function PedidosPage() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [allocations, setAllocations] = useState<AllocationMap>({});
   const [gestionados, setGestionados] = useState<Record<string, boolean>>({});
-  const [dryRun, setDryRun] = useState(true);
+  const [noFisicos, setNoFisicos] = useState<Record<string, boolean>>({});
+  const [dryRun, setDryRun] = useState(false);
 
   const fetchOrder = useCallback(async () => {
     const num = orderNumber.replace("#", "").trim();
@@ -368,11 +458,16 @@ export default function PedidosPage() {
     setOrder(null);
     setAllocations({});
     setGestionados({});
+    setNoFisicos({});
     setSuccessMsg(null);
     try {
       const res = await fetch(`/api/pedidos?order=${num}`);
-      if (!res.ok) throw new Error(`Error ${res.status}`);
-      const data: Order = await res.json();
+      const data = (await res.json().catch(() => null)) as (Order & { status?: string; error?: string }) | null;
+      if (!res.ok) throw new Error(data?.error ?? `Error ${res.status}`);
+      // El backend responde 200 con {status:"not_found"} cuando el pedido no existe
+      if (!data || data.status === "not_found" || !Array.isArray(data.items)) {
+        throw new Error(`El pedido #${num} no existe`);
+      }
       setOrder(data);
       const initial: AllocationMap = {};
       for (const item of data.items) {
@@ -388,10 +483,13 @@ export default function PedidosPage() {
       }
       setAllocations(initial);
       const initGestionados: Record<string, boolean> = {};
+      const initNoFisicos: Record<string, boolean> = {};
       for (const item of data.items) {
         initGestionados[item.variant_id] = item.gestionado;
+        initNoFisicos[item.variant_id] = item.no_fisico;
       }
       setGestionados(initGestionados);
+      setNoFisicos(initNoFisicos);
     } catch (e: any) {
       setError(e.message ?? "Error desconocido");
     } finally {
@@ -406,25 +504,52 @@ export default function PedidosPage() {
   );
 
   const handleToggleGestionado = useCallback((variantId: string) => {
-    setGestionados((prev) => ({ ...prev, [variantId]: !prev[variantId] }));
+    setGestionados((prev) => {
+      const turningOn = !prev[variantId];
+      if (turningOn) setNoFisicos((n) => ({ ...n, [variantId]: false }));
+      return { ...prev, [variantId]: turningOn };
+    });
+  }, []);
+
+  const handleToggleNoFisico = useCallback((variantId: string) => {
+    setNoFisicos((prev) => {
+      const turningOn = !prev[variantId];
+      if (turningOn) setGestionados((g) => ({ ...g, [variantId]: false }));
+      return { ...prev, [variantId]: turningOn };
+    });
   }, []);
 
   function validate(): string | null {
     if (!order) return "No hay pedido cargado";
     for (const item of order.items) {
-      if (isSinProveedor(item.providers)) continue;
-      const alloc = allocations[item.variant_id] ?? {};
-      if (item.providers.length === 1) {
-        if (!alloc[item.providers[0]]) return `Selecciona proveedor para "${item.title}"`;
-      } else {
-        const total = totalAllocated(alloc);
-        if (total !== item.quantity) return `"${item.title}": asigna ${item.quantity} ud. (actual: ${total})`;
+      const esNoFisico = noFisicos[item.variant_id];
+      const esGestionado = gestionados[item.variant_id];
+
+      // No físico: se salta toda validación de proveedor y gestionado
+      if (esNoFisico) continue;
+
+      // Validar proveedor
+      if (!isSinProveedor(item.providers)) {
+        const alloc = allocations[item.variant_id] ?? {};
+        if (item.providers.length === 1) {
+          if (!alloc[item.providers[0]]) return `Selecciona proveedor para "${item.title}"`;
+        } else {
+          const total = totalAllocated(alloc);
+          if (total !== item.quantity) return `"${item.title}": asigna ${item.quantity} ud. (actual: ${total})`;
+        }
       }
+
+      // Validar que esté gestionado
+      if (!esGestionado) return `"${item.title}" no está marcado como gestionado`;
     }
     return null;
   }
 
   async function handleSubmit() {
+    if (isAlistado) {
+      setError(`El pedido ${order!.order_name} ya está alistado. No se permiten modificaciones.`);
+      return;
+    }
     const validationError = validate();
     if (validationError) { setError(validationError); return; }
     setSubmitting(true);
@@ -432,9 +557,16 @@ export default function PedidosPage() {
     setSuccessMsg(null);
     const body = {
       order_name: order!.order_name,
+      order_id: order!.order_id,
+      tags: order!.tags,
       dry_run: dryRun,
-      allocations: Object.entries(allocations).map(([variant_id, providers]) => ({ variant_id, providers })),
+      allocations: Object.entries(allocations).map(([variant_id, providers]) => ({
+        variant_id,
+        providers: Object.fromEntries(Object.entries(providers).filter(([, qty]) => qty > 0)),
+      })),
       gestionados: Object.entries(gestionados).filter(([, v]) => v).map(([variant_id]) => variant_id),
+      no_fisicos: Object.entries(noFisicos).filter(([, v]) => v).map(([variant_id]) => variant_id),
+      items: order!.items,
     };
     try {
       const res = await fetch("/api/pedidos", {
@@ -444,9 +576,17 @@ export default function PedidosPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
-      setSuccessMsg(dryRun
-        ? "✓ Dry run exitoso — sin cambios reales guardados"
-        : "✓ Pedido procesado y guardado correctamente");
+      if (data.excel_warning) {
+        setError(data.excel_warning);
+      } else {
+        const inv = data.inventory;
+        const detalle = inv
+          ? ` | Actualizados: ${inv.updated ?? 0}, Eliminados: ${inv.removed ?? 0}`
+          : "";
+        setSuccessMsg(dryRun
+          ? "✓ Dry run exitoso — sin cambios reales guardados"
+          : `✓ Pedido procesado y registrado en Excel${detalle}`);
+      }
     } catch (e: any) {
       setError(e.message ?? "Error al procesar");
     } finally {
@@ -454,9 +594,11 @@ export default function PedidosPage() {
     }
   }
 
+  const isAlistado = order?.tags?.includes("alistado") ?? false;
+
   const stats = order ? {
     total: order.items.length,
-    gestionados: Object.values(gestionados).filter(Boolean).length,
+    gestionados: order.items.filter(i => gestionados[i.variant_id] || noFisicos[i.variant_id]).length,
     sinProveedor: order.items.filter((i) => isSinProveedor(i.providers)).length,
     totalCOP: order.items.reduce((s, i) => s + i.price * i.quantity, 0),
   } : null;
@@ -647,6 +789,23 @@ export default function PedidosPage() {
           )}
         </div>
 
+        {/* Banner pedido alistado */}
+        {isAlistado && (
+          <div style={{
+            padding: "12px 28px 0", flexShrink: 0,
+          }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "12px 18px", borderRadius: 8,
+              background: "#1a0a00", border: "2px solid #F97316",
+              color: "#FED7AA", fontSize: 13, fontWeight: 600,
+              fontFamily: "'Philosopher', serif",
+            }}>
+              🔒 Este pedido ya fue <strong style={{ color: "#F97316", marginLeft: 4, marginRight: 4 }}>ALISTADO</strong> — no se permiten modificaciones ni en Shopify ni en el Excel.
+            </div>
+          </div>
+        )}
+
         {/* Alertas */}
         {(error || successMsg) && (
           <div style={{ padding: "12px 28px 0", flexShrink: 0 }}>
@@ -677,17 +836,70 @@ export default function PedidosPage() {
         {/* Lista items */}
         {order ? (
           <div className="vault-scroll" style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 900, margin: "0 auto", width: "100%" }}>
-              {order.items.map((item) => (
-                <OrderItemCard
-                  key={item.variant_id}
-                  item={item}
-                  allocation={allocations[item.variant_id] ?? {}}
-                  gestionado={gestionados[item.variant_id] ?? false}
-                  onAllocationChange={handleAllocationChange}
-                  onToggleGestionado={handleToggleGestionado}
-                />
-              ))}
+            <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900, margin: "0 auto", width: "100%" }}>
+              {(() => {
+                const singles: Record<string, typeof order.items> = {};
+                const multiples: typeof order.items = [];
+                const sinProveedor: typeof order.items = [];
+
+                for (const item of order.items) {
+                  if (isSinProveedor(item.providers)) {
+                    sinProveedor.push(item);
+                  } else if (item.providers.length > 1) {
+                    multiples.push(item);
+                  } else {
+                    const key = item.providers[0] ?? "Sin proveedor";
+                    if (!singles[key]) singles[key] = [];
+                    singles[key].push(item);
+                  }
+                }
+
+                const sortedSingles = Object.entries(singles).sort(([a], [b]) =>
+                  a.localeCompare(b, "es")
+                );
+
+                const renderGroup = (label: string, items: typeof order.items, accent = false) => (
+                  <div key={label}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                      <span style={{
+                        fontFamily: "'Philosopher', serif", fontSize: 13, fontWeight: 700,
+                        color: accent ? "#5C84A0" : "#B08343",
+                        textTransform: "uppercase", letterSpacing: 1.5,
+                      }}>
+                        {label}
+                      </span>
+                      <span style={{
+                        fontSize: 11, color: "#5C84A0", background: "#122F43",
+                        border: "1px solid #24445D", borderRadius: 20,
+                        padding: "1px 8px", fontFamily: "monospace",
+                      }}>
+                        {items.length} ítem{items.length !== 1 ? "s" : ""}
+                      </span>
+                      <div style={{ flex: 1, height: 1, background: "#24445D40" }} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {items.map((item) => (
+                        <OrderItemCard
+                          key={item.variant_id}
+                          item={item}
+                          allocation={allocations[item.variant_id] ?? {}}
+                          gestionado={gestionados[item.variant_id] ?? false}
+                          noFisico={noFisicos[item.variant_id] ?? false}
+                          onAllocationChange={handleAllocationChange}
+                          onToggleGestionado={handleToggleGestionado}
+                          onToggleNoFisico={handleToggleNoFisico}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                );
+
+                return [
+                  ...sortedSingles.map(([proveedor, items]) => renderGroup(proveedor, items)),
+                  ...(multiples.length > 0 ? [renderGroup("Múltiples proveedores", multiples, true)] : []),
+                  ...(sinProveedor.length > 0 ? [renderGroup("Sin proveedor", sinProveedor, true)] : []),
+                ];
+              })()}
             </div>
           </div>
         ) : (
@@ -747,21 +959,21 @@ export default function PedidosPage() {
 
             <button
               onClick={handleSubmit}
-              disabled={submitting}
+              disabled={submitting || isAlistado}
               style={{
                 padding: "10px 28px",
-                background: submitting ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
-                color: submitting ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
-                border: `1px solid ${dryRun ? "#8F672E" : "#6A481C"}`,
+                background: submitting || isAlistado ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
+                color: submitting || isAlistado ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
+                border: `1px solid ${isAlistado ? "#374151" : dryRun ? "#8F672E" : "#6A481C"}`,
                 borderRadius: 8,
                 fontFamily: "'Philosopher', serif",
                 fontWeight: 700, fontSize: 14,
-                cursor: submitting ? "not-allowed" : "pointer",
-                opacity: submitting ? 0.7 : 1,
+                cursor: submitting || isAlistado ? "not-allowed" : "pointer",
+                opacity: submitting || isAlistado ? 0.5 : 1,
                 transition: "all 0.2s", whiteSpace: "nowrap",
               }}
             >
-              {submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
+              {isAlistado ? "🔒 Pedido alistado" : submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
             </button>
           </div>
         )}

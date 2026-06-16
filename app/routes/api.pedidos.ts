@@ -4,7 +4,21 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 const API_BASE = process.env.THEVAULT_API_URL!;
 const API_KEY = process.env.THEVAULT_API_KEY!;
 
-// GET /api/pedidos?order=1463
+// ─── Tipos ────────────────────────────────────────────────────────────────────
+
+interface RequestBody {
+  order_name: string;
+  order_id: string;
+  tags: string[];
+  dry_run: boolean;
+  allocations: { variant_id: string; providers: Record<string, number> }[];
+  gestionados: string[];
+  no_fisicos: string[];
+  items: { variant_id: string; [key: string]: unknown }[];
+}
+
+// ─── GET /api/pedidos?order=1463 ──────────────────────────────────────────────
+
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const orderNumber = url.searchParams.get("order");
@@ -14,26 +28,47 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 
   const response = await fetch(`${API_BASE}/orders/${orderNumber}`, {
-    headers: { "x-api-key": API_KEY },
-    "ngrok-skip-browser-warning": "true",
+    headers: {
+      "x-api-key": API_KEY,
+      "ngrok-skip-browser-warning": "true",
+    },
   });
 
   if (!response.ok) {
-    throw new Error(`Error cargando pedido #${orderNumber}`);
+    return json(
+      { error: `Error cargando pedido #${orderNumber} (HTTP ${response.status})` },
+      { status: response.status },
+    );
   }
 
   const data = await response.json();
   return json(data);
 }
 
-// POST /api/pedidos  → procesa la gestión del pedido
+// ─── POST /api/pedidos ────────────────────────────────────────────────────────
+
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return json({ error: "Método no permitido" }, { status: 405 });
   }
 
-  const body = await request.json();
+  const body: RequestBody = await request.json();
 
+  // ── 1. Verificar tag "alistado" antes de tocar nada ──────────────────────
+  if (body.tags?.includes("alistado")) {
+    return json(
+      { error: `El pedido ${body.order_name} ya está alistado. No se realizó ningún cambio.` },
+      { status: 409 }
+    );
+  }
+
+  // ── 2. Filtrar no_fisicos de las allocations ─────────────────────────────
+  const noFisicoSet = new Set(body.no_fisicos ?? []);
+  const allocations = body.allocations.filter(
+    (a) => !noFisicoSet.has(a.variant_id)
+  );
+
+  // ── 3. Llamar al backend (maneja Excel + Shopify + tag "alistado") ────────
   const response = await fetch(`${API_BASE}/orders/process`, {
     method: "POST",
     headers: {
@@ -41,7 +76,12 @@ export async function action({ request }: ActionFunctionArgs) {
       "Content-Type": "application/json",
       "ngrok-skip-browser-warning": "true",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      order_name: body.order_name,
+      allocations,
+      dry_run: body.dry_run,
+      no_fisicos: body.no_fisicos ?? [],
+    }),
   });
 
   if (!response.ok) {
@@ -53,5 +93,45 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const data = await response.json();
-  return json(data);
+
+  // Manejar todos los estados de error del pipeline
+  switch (data.status) {
+    case "completed":
+      return json(data);
+
+    case "blocked":
+    case "already_processed":
+      return json(
+        { error: `El pedido ${body.order_name} ya está alistado. No se realizó ningún cambio.` },
+        { status: 409 }
+      );
+
+    case "excel_error":
+      return json(
+        { error: `Error en Excel: ${data.message ?? data.excel?.message ?? "Error desconocido"}. Inventario y tag NO actualizados.` },
+        { status: 500 }
+      );
+
+    case "allocation_error":
+      return json(
+        { error: `Error en allocations: ${data.message}` },
+        { status: 400 }
+      );
+
+    case "validation_error":
+      return json(
+        { error: `Error de validación: ${JSON.stringify(data.errors)}` },
+        { status: 400 }
+      );
+
+    case "error":
+      return json(
+        { error: data.message ?? "Error desconocido en el backend" },
+        { status: 500 }
+      );
+
+    default:
+      // Retornar los datos tal cual para casos no contemplados
+      return json(data);
+  }
 }

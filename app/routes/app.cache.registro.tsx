@@ -40,6 +40,7 @@ export default function RegistroCachePage() {
         setCacheStatus("updated");
         setMessage("Cache actualizado correctamente");
       } else {
+        setCacheStatus("updated");
         setMessage("Operación completada");
       }
 
@@ -110,11 +111,12 @@ export default function RegistroCachePage() {
           display: "flex",
           alignItems: "center",
           gap: 8,
-          background: cacheStatus === "created" ? "#0a2a1a" : cacheStatus === "updated" ? "#0a1a2a" : "#2a0e0e",
-          border: `1px solid ${cacheStatus === "created" ? "#166534" : cacheStatus === "updated" ? "#24445D" : "#7f1d1d"}`,
-          color: cacheStatus === "created" ? "#86efac" : cacheStatus === "updated" ? "#93c5fd" : "#fca5a5",
+          background: cacheStatus === "error" ? "#2a0e0e" : "#1a1206",
+          border: `1px solid ${cacheStatus === "error" ? "#7f1d1d" : "#8F672E"}`,
+          color: cacheStatus === "error" ? "#fca5a5" : "#B08343",
+          fontFamily: "'Philosopher', serif",
         }}>
-          {cacheStatus === "created" ? "🆕" : cacheStatus === "updated" ? "♻️" : "⚠️"}
+          {cacheStatus === "created" ? "🆕 " : cacheStatus === "updated" ? "✓ " : cacheStatus === "error" ? "⚠️ " : ""}
           {message}
         </div>
       )}

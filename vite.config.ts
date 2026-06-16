@@ -33,7 +33,7 @@ if (host === "localhost") {
 }
 
 export default defineConfig({
-  base: appUrl ? `${appUrl}/` : "/",
+  base: "/",
   server: {
     allowedHosts: [host],
     cors: {
