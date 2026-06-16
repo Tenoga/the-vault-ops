@@ -576,6 +576,15 @@ export default function PedidosPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Error ${res.status}`);
+      // Red de seguridad: el proxy solo deja pasar con 200 cuando status
+      // es "completed", salvo en su rama `default` (status no contemplado
+      // explícitamente) — ahí sí puede llegar acá sin estar completo.
+      if (data.status && data.status !== "completed") {
+        const detail = data.message
+          ?? (Array.isArray(data.errors) ? data.errors.join(" · ") : null)
+          ?? `El backend respondió con estado "${data.status}"`;
+        throw new Error(detail);
+      }
       if (data.excel_warning) {
         setError(data.excel_warning);
       } else {
