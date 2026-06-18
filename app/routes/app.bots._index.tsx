@@ -14,20 +14,21 @@ const bots = [
     disponible: true,
   },
   {
-    nombre: "Bot Pirata Draco",
-    emoji: "🐲",
-    descripcion: "Creación masiva de productos desde Scryfall.",
-    to: "",
-    accent: "#24445D",
-    disponible: false,
-  },
-  {
     nombre: "Actualizador de Precios",
     emoji: "💰",
     descripcion:
       "Compara precios contra SCG y actualiza Shopify con seguimiento en vivo: progreso, ETA y diferencia total.",
     to: "/app/bots/precios",
     accent: "#6A481C",
+    disponible: true,
+  },
+  {
+    nombre: "Bots Pirata",
+    emoji: "🏴‍☠️",
+    descripcion:
+      "Cazan cartas más baratas que SCG en 4 tiendas (Draco, Rohan, ElBulk, TopCard). Lánzalos y revisa las mejores oportunidades de compra en un panel.",
+    to: "/app/bots/piratas",
+    accent: "#24445D",
     disponible: true,
   },
 ];
