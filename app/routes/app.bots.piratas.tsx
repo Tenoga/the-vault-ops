@@ -47,6 +47,7 @@ interface Oportunidad {
   url_tienda: string | null;
   url_scg: string | null;
   nivel?: string;
+  prioridad?: number;   // 3=ALTA, 2=MEDIA, 1=BAJA (clasificación del bot)
   bot?: BotKey;
 }
 
@@ -87,6 +88,7 @@ const ESTADO_COLOR: Record<string, { bg: string; border: string; text: string }>
   completado: { bg: "#8F672E40", border: "#8F672E", text: "#e8d5b7" },
   error: { bg: "#2a0e0e", border: "#7f1d1d", text: "#fca5a5" },
   cancelado: { bg: "#3a2f1f", border: "#6A481C", text: "#d6b88a" },
+  interrumpido: { bg: "#2a0e0e", border: "#7f1d1d", text: "#fca5a5" },
 };
 
 const ACTIVO = (e: Estado) => e === "en_cola" || e === "ejecutando";
@@ -192,6 +194,7 @@ function LauncherTab() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [cancelando, setCancelando] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(Date.now());
+  const [siguiendo, setSiguiendo] = useState<string | null>(null);
 
   const cargarJobs = useCallback(async () => {
     try {
@@ -207,12 +210,15 @@ function LauncherTab() {
   }, [cargarJobs]);
 
   // Polling mientras haya algún job tracked activo
-  const hayActivo = jobs.some((j) => tracked.includes(j.job_id) && ACTIVO(j.estado));
+  // Hay algun job activo en la lista (no solo los lanzados en esta sesion) -> asi
+  // se sigue/actualiza tambien un job que ya estaba corriendo o que se sigue
+  // desde el historial.
+  const hayActivo = jobs.some((j) => ACTIVO(j.estado));
   useEffect(() => {
-    if (tracked.length === 0) return;
+    if (!hayActivo) return;
     const timer = setInterval(cargarJobs, 3000);
     return () => clearInterval(timer);
-  }, [tracked, hayActivo, cargarJobs]);
+  }, [hayActivo, cargarJobs]);
 
   // Tick de 1s para la cuenta regresiva del ETA mientras hay algo corriendo
   useEffect(() => {
@@ -233,6 +239,7 @@ function LauncherTab() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`);
       setTracked((prev) => [data.job_id, ...prev]);
+      setSiguiendo(data.job_id);
       cargarJobs();
     } catch (e: any) {
       setError(e.message ?? "Error lanzando el bot");
@@ -254,6 +261,7 @@ function LauncherTab() {
       if (!r.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`);
       const ids = (data as Job[]).map((j) => j.job_id);
       setTracked((prev) => [...ids, ...prev]);
+      setSiguiendo(ids[0] ?? null);
       cargarJobs();
     } catch (e: any) {
       setError(e.message ?? "Error lanzando los bots");
@@ -272,8 +280,17 @@ function LauncherTab() {
     }
   }
 
+  function seguir(jobId: string) {
+    setSiguiendo(jobId);
+    setTracked((prev) => (prev.includes(jobId) ? prev : [jobId, ...prev]));
+  }
+
   const trackedJobs = jobs.filter((j) => tracked.includes(j.job_id));
-  const corriendo = trackedJobs.find((j) => j.estado === "ejecutando")
+  // El panel de detalle muestra el job que estas "siguiendo" (si sigue activo);
+  // si no, cae al primer job activo lanzado en esta sesion.
+  const corriendo =
+    (siguiendo ? jobs.find((j) => j.job_id === siguiendo && ACTIVO(j.estado)) : undefined)
+    ?? trackedJobs.find((j) => j.estado === "ejecutando")
     ?? trackedJobs.find((j) => j.estado === "en_cola");
   const eta = estimarEta(jobs, corriendo, now);
 
@@ -411,14 +428,40 @@ function LauncherTab() {
                     <span style={{ color: "#b8a07a" }}>{h.progreso.procesados}/{h.progreso.total} · <span style={{ color: "#e8d5b7" }}>{h.progreso.oportunidades} 💎</span></span>
                   ) : null}
                 </div>
-                <span style={{
-                  fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1,
-                  padding: "2px 10px", borderRadius: 20,
-                  background: ESTADO_COLOR[h.estado]?.bg, border: `1px solid ${ESTADO_COLOR[h.estado]?.border}`,
-                  color: ESTADO_COLOR[h.estado]?.text,
-                }}>
-                  {h.estado.replace("_", " ")}
-                </span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1,
+                    padding: "2px 10px", borderRadius: 20,
+                    background: ESTADO_COLOR[h.estado]?.bg, border: `1px solid ${ESTADO_COLOR[h.estado]?.border}`,
+                    color: ESTADO_COLOR[h.estado]?.text,
+                  }}>
+                    {h.estado.replace("_", " ")}
+                  </span>
+                  {ACTIVO(h.estado) && (
+                    <>
+                      <button
+                        onClick={() => seguir(h.job_id)}
+                        style={{
+                          ...botonSecundario, padding: "4px 12px", fontSize: 11.5,
+                          ...(corriendo?.job_id === h.job_id ? { borderColor: "#8F672E", color: "#fff" } : {}),
+                        }}
+                      >
+                        {corriendo?.job_id === h.job_id ? "● Siguiendo" : "Seguir"}
+                      </button>
+                      <button
+                        onClick={() => cancelar(h.job_id)}
+                        disabled={cancelando[h.job_id]}
+                        style={{
+                          ...botonCancelar, padding: "4px 12px", fontSize: 11.5,
+                          opacity: cancelando[h.job_id] ? 0.6 : 1,
+                          cursor: cancelando[h.job_id] ? "default" : "pointer",
+                        }}
+                      >
+                        {cancelando[h.job_id] ? "…" : "⏹ Detener"}
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             ))}
           </ScrollArea>
@@ -484,20 +527,12 @@ function OportunidadesTab() {
 
   const grupos: { key: string; total: number; ops: Oportunidad[]; mejor: number }[] = [];
   if (data) {
-    grupos.push({
-      key: "combinado",
-      total: data.combinado.total,
-      ops: data.combinado.oportunidades,
-      mejor: data.combinado.oportunidades[0]?.diferencia ?? 0,
-    });
+    const comb = ordenarPorNivel(data.combinado.oportunidades);
+    grupos.push({ key: "combinado", total: data.combinado.total, ops: comb, mejor: mejorGanancia(comb) });
     for (const b of BOTS) {
       const g = data.por_bot[b.key];
-      grupos.push({
-        key: b.key,
-        total: g?.total ?? 0,
-        ops: g?.oportunidades ?? [],
-        mejor: g?.oportunidades?.[0]?.diferencia ?? 0,
-      });
+      const ops = ordenarPorNivel(g?.oportunidades ?? []);
+      grupos.push({ key: b.key, total: g?.total ?? 0, ops, mejor: mejorGanancia(ops) });
     }
   }
 
@@ -551,9 +586,9 @@ function OportunidadesTab() {
           No hay oportunidades para {BOT_META[seleccion]?.nombre}. Corre el bot desde la pestaña “Lanzar”.
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 }}>
           {grupoSel.ops.map((o, i) => (
-            <OportunidadRow key={`${o.scryfall_id}-${o.bot ?? seleccion}-${i}`} o={o} mostrarBot={seleccion === "combinado"} />
+            <OportunidadCard key={`${o.scryfall_id}-${o.bot ?? seleccion}-${i}`} o={o} mostrarBot={seleccion === "combinado"} botKey={o.bot ?? seleccion} />
           ))}
         </div>
       )}
@@ -561,49 +596,152 @@ function OportunidadesTab() {
   );
 }
 
-function OportunidadRow({ o, mostrarBot }: { o: Oportunidad; mostrarBot: boolean }) {
-  const meta = o.bot ? BOT_META[o.bot] : null;
+// Orden tipo Telegram: por nivel (ALTA→MEDIA→BAJA), luego por ganancia desc.
+function prioridadDe(o: Oportunidad): number {
+  if (o.prioridad != null) return o.prioridad;
+  if (o.porcentaje >= 80) return 3;
+  if (o.porcentaje >= 60) return 2;
+  return 1;
+}
+function ordenarPorNivel(ops: Oportunidad[]): Oportunidad[] {
+  return [...ops].sort((a, b) => {
+    const d = prioridadDe(b) - prioridadDe(a);   // prioridad desc (ALTA primero)
+    return d !== 0 ? d : b.diferencia - a.diferencia;
+  });
+}
+function mejorGanancia(ops: Oportunidad[]): number {
+  return ops.reduce((m, o) => Math.max(m, o.diferencia), 0);
+}
+function nivelInfo(o: Oportunidad) {
+  const p = prioridadDe(o);
+  if (p >= 3) return { label: o.nivel ?? "🔥 ALTA", bg: "#2a0e0e", border: "#FF3B3B", text: "#FF8A8A" };
+  if (p === 2) return { label: o.nivel ?? "✅ MEDIA", bg: "#1a1206", border: "#B08343", text: "#e8b765" };
+  return { label: o.nivel ?? "🟡 BAJA", bg: "#0E1D2B", border: "#5C84A0", text: "#93c5fd" };
+}
+
+// Carta a tamaño grande al hacer click (mismo patrón que botPedidos).
+function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
   return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 14,
-      background: "#0E1D2B", border: "1px solid #24445D40", borderRadius: 10,
-      padding: "10px 14px", flexWrap: "wrap",
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(14, 21, 29, 0.92)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out",
     }}>
-      <img
-        src={o.image_url || LOGO_FALLBACK}
-        alt=""
-        loading="lazy"
-        onError={(e) => { (e.currentTarget as HTMLImageElement).src = LOGO_FALLBACK; }}
-        style={{ width: 46, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid #24445D", flexShrink: 0 }}
-      />
-      <div style={{ flex: "1 1 180px", minWidth: 160 }}>
-        <div style={{ fontSize: 14.5, fontWeight: 700, color: "#e8d5b7", fontFamily: "'Philosopher', serif" }}>
-          {o.nombre} {o.foil && <span style={{ fontSize: 11, color: "#B08343" }}>✦ foil</span>}
-        </div>
-        <div style={{ fontSize: 11.5, color: "#8F672E" }}>
-          {o.expansion}
-          {mostrarBot && meta && <span style={{ marginLeft: 8, color: "#93c5fd" }}>{meta.emoji} {meta.nombre}</span>}
-        </div>
-      </div>
-      <div style={{ textAlign: "right", fontSize: 12.5, color: "#b8a07a", flexShrink: 0 }}>
-        <div>tienda <b style={{ color: "#e8d5b7" }}>{cop(o.precio_tienda)}</b></div>
-        <div>SCG <b style={{ color: "#e8d5b7" }}>{cop(o.precio_scg)}</b></div>
-      </div>
-      <div style={{ textAlign: "right", flexShrink: 0, minWidth: 110 }}>
-        <div style={{ fontSize: 19, fontWeight: 900, color: "#39FF14", textShadow: "0 0 7px #39FF1490", fontFamily: "'Philosopher', serif" }}>
-          +{cop(o.diferencia)}
-        </div>
-        <div style={{ fontSize: 12, fontWeight: 800, color: "#39FF14" }}>+{Math.round(o.porcentaje)}%</div>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
-        {o.url_tienda && (
-          <a href={o.url_tienda} target="_blank" rel="noreferrer" style={linkBtn}>Tienda ↗</a>
-        )}
-        {o.url_scg && (
-          <a href={o.url_scg} target="_blank" rel="noreferrer" style={{ ...linkBtn, background: "#122F43" }}>SCG ↗</a>
-        )}
+      <div onClick={(e) => e.stopPropagation()} style={{ position: "relative" }}>
+        <img src={src} alt={alt} style={{
+          maxWidth: "80vw", maxHeight: "85vh", borderRadius: 16,
+          border: "2px solid #B08343", boxShadow: "0 0 60px #B0834340", objectFit: "contain",
+        }} />
+        <button onClick={onClose} style={{
+          position: "absolute", top: -14, right: -14, width: 30, height: 30, borderRadius: "50%",
+          background: "#0E1D2B", border: "1px solid #B08343", color: "#B08343",
+          fontSize: 16, fontWeight: 700, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>×</button>
       </div>
     </div>
+  );
+}
+
+function OportunidadCard({ o, mostrarBot, botKey }: { o: Oportunidad; mostrarBot: boolean; botKey: string }) {
+  const [lightbox, setLightbox] = useState(false);
+  const meta = BOT_META[botKey] ?? null;
+  const niv = nivelInfo(o);
+  return (
+    <>
+      {lightbox && o.image_url && (
+        <Lightbox src={o.image_url} alt={o.nombre} onClose={() => setLightbox(false)} />
+      )}
+      <div style={{
+        display: "flex", flexDirection: "column", gap: 10,
+        background: "#0E1D2B", border: `1px solid ${niv.border}55`,
+        borderTop: `3px solid ${niv.border}`, borderRadius: 12, padding: 12,
+      }}>
+        {/* nivel + bot */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{
+            fontSize: 11.5, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
+            background: niv.bg, border: `1px solid ${niv.border}`, color: niv.text,
+            fontFamily: "'Philosopher', serif", letterSpacing: 0.5, whiteSpace: "nowrap",
+          }}>{niv.label}</span>
+          {mostrarBot && meta && (
+            <span style={{ fontSize: 11.5, color: "#93c5fd", fontWeight: 700, whiteSpace: "nowrap" }}>
+              {meta.emoji} {meta.nombre}
+            </span>
+          )}
+        </div>
+
+        {/* imagen (click → grande) */}
+        <div
+          onClick={() => o.image_url && setLightbox(true)}
+          style={{
+            width: "100%", aspectRatio: "0.716",
+            borderRadius: 10, overflow: "hidden", border: "1px solid #24445D", background: "#0E151D",
+            cursor: o.image_url ? "zoom-in" : "default", transition: "border-color 0.2s",
+          }}
+          onMouseEnter={(e) => { if (o.image_url) e.currentTarget.style.borderColor = "#B08343"; }}
+          onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#24445D")}
+        >
+          <img
+            src={o.image_url || LOGO_FALLBACK}
+            alt={o.nombre}
+            loading="lazy"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).src = LOGO_FALLBACK; }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          />
+        </div>
+
+        {/* nombre + expansión */}
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#e8d5b7", fontFamily: "'Philosopher', serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {o.nombre}
+          </div>
+          <div style={{ fontSize: 11.5, color: "#8F672E", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {o.expansion}
+          </div>
+        </div>
+
+        {/* foil / no foil */}
+        {o.foil ? (
+          <span style={{
+            alignSelf: "flex-start", fontSize: 12.5, fontWeight: 900, padding: "3px 14px", borderRadius: 20,
+            background: "linear-gradient(90deg, #FF00FF, #FF69FF, #FF00FF)", color: "#fff",
+            border: "2px solid #FF00FF", fontFamily: "'Philosopher', serif",
+            boxShadow: "0 0 14px #FF00FF, 0 0 28px #FF00FF80", letterSpacing: 1.5, textShadow: "0 0 8px #fff",
+          }}>✨ FOIL</span>
+        ) : (
+          <span style={{
+            alignSelf: "flex-start", fontSize: 12, fontWeight: 700, padding: "3px 12px", borderRadius: 20,
+            background: "#122F43", color: "#5C84A0", border: "1px solid #24445D", fontFamily: "'Philosopher', serif",
+          }}>🃏 No Foil</span>
+        )}
+
+        {/* precios */}
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#b8a07a" }}>
+          <span>{meta?.nombre ?? "Tienda"} <b style={{ color: "#e8d5b7" }}>{cop(o.precio_tienda)}</b></span>
+          <span>SCG <b style={{ color: "#e8d5b7" }}>{cop(o.precio_scg)}</b></span>
+        </div>
+
+        {/* ganancia */}
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 23, fontWeight: 900, color: "#39FF14", textShadow: "0 0 8px #39FF1490", fontFamily: "'Philosopher', serif" }}>
+            +{cop(o.diferencia)}
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#39FF14" }}>+{Math.round(o.porcentaje)}% de ganancia</div>
+        </div>
+
+        {/* links */}
+        <div style={{ display: "flex", gap: 8 }}>
+          {o.url_tienda && <a href={o.url_tienda} target="_blank" rel="noreferrer" style={{ ...linkBtn, flex: 1 }}>Tienda ↗</a>}
+          {o.url_scg && <a href={o.url_scg} target="_blank" rel="noreferrer" style={{ ...linkBtn, flex: 1, background: "#122F43" }}>SCG ↗</a>}
+        </div>
+      </div>
+    </>
   );
 }
 
