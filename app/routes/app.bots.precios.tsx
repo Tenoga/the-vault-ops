@@ -641,7 +641,10 @@ function MainCard({ card }: { card: CartaDetalle }) {
   }, [card]);
 
   return (
-    <div style={{ position: "relative", width: MAIN_W, height: MAIN_H + 86 }}>
+    // Altura fija para el caso más alto (precio tachado + precio nuevo + delta/%):
+    // así el bloque de cambio de precio nunca sale cortado y el layout no salta
+    // entre cartas con y sin cambio.
+    <div style={{ position: "relative", width: MAIN_W, height: MAIN_H + 116 }}>
       {layers.map((l, idx) => {
         const incoming = idx === layers.length - 1;
         const pi = precioInfo(l.card);
@@ -684,7 +687,14 @@ function MainCard({ card }: { card: CartaDetalle }) {
 // Cinta infinita de fondo con las demás cartas
 function Belt({ cards }: { cards: { image_url: string | null; titulo: string }[] }) {
   if (cards.length === 0) return null;
-  const loop = [...cards, ...cards]; // duplicado para loop sin costura
+  // El loop translateX(-50%) solo es sin costura si UNA copia de la secuencia
+  // cubre el ancho del panel; con pocas cartas quedaba un hueco vacío hasta que
+  // el loop reiniciaba. Se repite la secuencia hasta llenar ~1600px y ESO es lo
+  // que se duplica: siempre hay cartas corriendo, sin esperas.
+  const minItems = Math.ceil(1600 / (BELT_W + 18));
+  const media: typeof cards = [];
+  while (media.length < minItems) media.push(...cards);
+  const loop = [...media, ...media]; // duplicado para loop sin costura
   return (
     <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", overflow: "hidden", opacity: 0.3 }}>
       <div style={{ display: "flex", gap: 18, animation: "tv-belt 30s linear infinite", filter: "blur(1.5px)", paddingLeft: 18 }}>
@@ -716,7 +726,7 @@ function Carrusel({
         @keyframes tv-belt { from { transform: translateX(0); } to { transform: translateX(-50%); } }
       `}</style>
       <div style={{
-        position: "relative", height: MAIN_H + 96, overflow: "hidden",
+        position: "relative", height: MAIN_H + 136, overflow: "hidden",
         borderRadius: 12, background: "#0E151D", border: "1px solid #24445D40",
       }}>
         <Belt cards={beltCards} />

@@ -23,6 +23,31 @@ interface OrderItem {
   price: number;
   gestionado: boolean;
   no_fisico: boolean;
+  color_exacto?: string | null;
+  cmc?: number;
+}
+
+interface OrderAddress {
+  nombre?: string | null;
+  direccion1?: string | null;
+  direccion2?: string | null;
+  ciudad?: string | null;
+  provincia?: string | null;
+  pais?: string | null;
+  zip?: string | null;
+  telefono?: string | null;
+}
+
+interface OrderInfo {
+  customer_name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: OrderAddress | null;
+  shipping_method: string | null;
+  is_pickup: boolean | null;
+  tracking_numbers: string[];
+  total: number | string | null;
+  currency: string | null;
 }
 
 interface Order {
@@ -31,6 +56,18 @@ interface Order {
   order_id: string;
   tags: string[];
   items: OrderItem[];
+  info?: OrderInfo;
+}
+
+interface PendingOrder {
+  order_id: string;
+  order_name: string;
+  created_at: string;
+  tags: string[];
+  items_count: number;
+  total: number;
+  currency: string;
+  customer_name: string | null;
 }
 
 type ItemAllocation = Record<string, number>;
@@ -46,12 +83,80 @@ function formatCOP(value: number) {
   }).format(value);
 }
 
+function formatDate(iso: string) {
+  try {
+    return new Intl.DateTimeFormat("es-CO", {
+      day: "2-digit",
+      month: "short",
+    }).format(new Date(iso));
+  } catch {
+    return "";
+  }
+}
+
 function isSinProveedor(providers: string[]) {
   return providers.length === 1 && providers[0] === "Sin proveedor";
 }
 
 function totalAllocated(alloc: ItemAllocation) {
   return Object.values(alloc).reduce((s, v) => s + v, 0);
+}
+
+// ─── Agrupación por color (MTG) ────────────────────────────────────────────────
+// Orden canónico WUBRG (igual que el bot anterior): Blanco, Azul, Negro, Rojo,
+// Verde, Incoloro, Multicolor y por último Sin color. El metafield
+// `mtg.color_exacto` llega como las iniciales concatenadas, p. ej. "U", "WU", "".
+
+const COLOR_META: Record<
+  string,
+  { label: string; dot: string; order: number }
+> = {
+  W: { label: "Blanco", dot: "#F4ECCB", order: 0 },
+  U: { label: "Azul", dot: "#4A90D9", order: 1 },
+  B: { label: "Negro", dot: "#3A3A3A", order: 2 },
+  R: { label: "Rojo", dot: "#D9534F", order: 3 },
+  G: { label: "Verde", dot: "#5CB85C", order: 4 },
+  C: { label: "Incoloro", dot: "#B8B8B8", order: 5 },
+  MULTI: { label: "Multicolor", dot: "#E0A526", order: 6 },
+  NONE: { label: "Sin color", dot: "#5C84A0", order: 7 },
+};
+
+function colorGroupKey(colorExacto?: string | null): string {
+  const clean = (colorExacto ?? "").toUpperCase().replace(/[^WUBRGC]/g, "");
+
+  if (!clean) return "NONE";
+
+  const letras = Array.from(new Set(clean.split("")));
+  const deColor = letras.filter((c) => "WUBRG".includes(c));
+
+  if (deColor.length > 1) return "MULTI";
+  if (deColor.length === 1) return deColor[0];
+  if (letras.includes("C")) return "C";
+
+  return "NONE";
+}
+
+// Devuelve [clave_color, items][] ordenado WUBRG; dentro de cada color, por
+// coste de maná (cmc) y luego por nombre.
+function groupByColor(items: OrderItem[]): [string, OrderItem[]][] {
+  const groups: Record<string, OrderItem[]> = {};
+
+  for (const item of items) {
+    const key = colorGroupKey(item.color_exacto);
+    (groups[key] ??= []).push(item);
+  }
+
+  for (const key of Object.keys(groups)) {
+    groups[key].sort(
+      (a, b) =>
+        (a.cmc ?? 999) - (b.cmc ?? 999) ||
+        a.title.localeCompare(b.title, "es"),
+    );
+  }
+
+  return Object.entries(groups).sort(
+    ([a], [b]) => (COLOR_META[a]?.order ?? 99) - (COLOR_META[b]?.order ?? 99),
+  );
 }
 
 // ─── Provider Selector ────────────────────────────────────────────────────────
@@ -436,6 +541,81 @@ function OrderItemCard({
   );
 }
 
+// ─── Order Info Band ──────────────────────────────────────────────────────────
+
+function OrderInfoBand({ info }: { info: OrderInfo }) {
+  const addr = info.address;
+  const hasAddr = !!(addr && (addr.direccion1 || addr.ciudad || addr.provincia));
+  const hasAny =
+    info.customer_name || info.phone || info.email ||
+    hasAddr || info.is_pickup || info.shipping_method ||
+    (info.tracking_numbers?.length ?? 0) > 0;
+  if (!hasAny) return null;
+
+  const LABEL: React.CSSProperties = {
+    fontSize: 10, fontWeight: 700, color: "#5C84A0",
+    textTransform: "uppercase", letterSpacing: 1.5,
+    fontFamily: "'Philosopher', serif",
+  };
+  const STRONG: React.CSSProperties = {
+    fontSize: 14, color: "#e8d5b7", fontFamily: "'Literata', serif",
+  };
+  const SUB: React.CSSProperties = {
+    fontSize: 12, color: "#5C84A0", fontFamily: "monospace",
+    wordBreak: "break-word",
+  };
+
+  return (
+    <div style={{ padding: "12px 28px 0", flexShrink: 0 }}>
+      <div style={{
+        display: "flex", flexWrap: "wrap", gap: "12px 32px",
+        padding: "14px 18px", borderRadius: 10,
+        background: "#0E1D2B", border: "1px solid #24445D50",
+      }}>
+        {/* Cliente */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 200 }}>
+          <span style={LABEL}>Cliente</span>
+          <span style={STRONG}>{info.customer_name ?? "—"}</span>
+          {(info.phone || info.email) && (
+            <span style={SUB}>{[info.phone, info.email].filter(Boolean).join("  ·  ")}</span>
+          )}
+        </div>
+
+        {/* Envío / Retiro */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 240, flex: 1 }}>
+          <span style={LABEL}>{info.is_pickup ? "Retiro en tienda" : "Envío"}</span>
+          {info.is_pickup ? (
+            <span style={STRONG}>🏬 Recoge en tienda</span>
+          ) : hasAddr ? (
+            <>
+              <span style={STRONG}>
+                {[addr!.direccion1, addr!.direccion2].filter(Boolean).join(", ") || "—"}
+              </span>
+              <span style={SUB}>
+                {[addr!.ciudad, addr!.provincia, addr!.pais].filter(Boolean).join(", ")}
+                {addr!.zip ? `  ·  ${addr!.zip}` : ""}
+              </span>
+            </>
+          ) : (
+            <span style={SUB}>Sin dirección registrada</span>
+          )}
+          {info.shipping_method && <span style={SUB}>🚚 {info.shipping_method}</span>}
+        </div>
+
+        {/* Tracking */}
+        {(info.tracking_numbers?.length ?? 0) > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 160 }}>
+            <span style={LABEL}>Guía</span>
+            {info.tracking_numbers.map((t) => (
+              <span key={t} style={STRONG}>📦 {t}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function PedidosPage() {
@@ -449,9 +629,12 @@ export default function PedidosPage() {
   const [gestionados, setGestionados] = useState<Record<string, boolean>>({});
   const [noFisicos, setNoFisicos] = useState<Record<string, boolean>>({});
   const [dryRun, setDryRun] = useState(false);
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [pendingError, setPendingError] = useState<string | null>(null);
 
-  const fetchOrder = useCallback(async () => {
-    const num = orderNumber.replace("#", "").trim();
+  const fetchOrder = useCallback(async (numArg?: string) => {
+    const num = (numArg ?? orderNumber).replace("#", "").trim();
     if (!num) return;
     setLoading(true);
     setError(null);
@@ -496,6 +679,27 @@ export default function PedidosPage() {
       setLoading(false);
     }
   }, [orderNumber]);
+
+  const fetchPending = useCallback(async () => {
+    setPendingLoading(true);
+    setPendingError(null);
+    try {
+      const res = await fetch(`/api/pedidos?list=pending`);
+      const data = (await res.json().catch(() => null)) as
+        | { orders?: PendingOrder[]; error?: string }
+        | null;
+      if (!res.ok) throw new Error(data?.error ?? `Error ${res.status}`);
+      setPendingOrders(Array.isArray(data?.orders) ? data!.orders! : []);
+    } catch (e: any) {
+      setPendingError(e.message ?? "No se pudieron cargar los pendientes");
+    } finally {
+      setPendingLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPending();
+  }, [fetchPending]);
 
   const handleAllocationChange = useCallback(
     (variantId: string, alloc: ItemAllocation) => {
@@ -592,10 +796,19 @@ export default function PedidosPage() {
         const detalle = inv
           ? ` | Actualizados: ${inv.updated ?? 0}, Eliminados: ${inv.removed ?? 0}`
           : "";
+        const ful = data.fulfillment;
+        const fulMsg =
+          ful?.status === "fulfilled" ? " · marcado como preparado en Shopify"
+          : ful?.status === "already_fulfilled" ? " · ya estaba preparado en Shopify"
+          : ful?.status === "error" ? " · ⚠️ no se pudo marcar preparado (revisar Shopify)"
+          : "";
         setSuccessMsg(dryRun
           ? "✓ Dry run exitoso — sin cambios reales guardados"
-          : `✓ Pedido procesado y registrado en Excel${detalle}`);
+          : `✓ Pedido procesado y registrado en Excel${detalle}${fulMsg}`);
       }
+      // Tras un procesamiento real el pedido queda preparado: refrescamos
+      // la lista para que ya no aparezca entre los pendientes.
+      if (!dryRun) fetchPending();
     } catch (e: any) {
       setError(e.message ?? "Error al procesar");
     } finally {
@@ -664,7 +877,7 @@ export default function PedidosPage() {
               }}
             />
             <button
-              onClick={fetchOrder}
+              onClick={() => fetchOrder()}
               disabled={loading || !orderNumber.trim()}
               style={{
                 width: "100%", padding: "9px 0",
@@ -770,18 +983,32 @@ export default function PedidosPage() {
           borderBottom: "1px solid #24445D50",
           background: "#0E1D2B", flexShrink: 0,
         }}>
-          <div>
-            <h1 style={{
-              fontFamily: "'Nova Cut', cursive", fontSize: 30,
-              color: "#B08343", margin: 0, letterSpacing: 2,
-            }}>
-              {order ? `Pedido ${order.order_name}` : "Gestor de Pedidos"}
-            </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             {order && (
-              <p style={{ fontSize: 11, color: "#24445D", fontFamily: "monospace", marginTop: 2 }}>
-                {order.order_id}
-              </p>
+              <button
+                onClick={() => { setOrder(null); setError(null); setSuccessMsg(null); }}
+                title="Volver a pendientes"
+                style={{
+                  width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                  background: "#122F43", border: "1px solid #24445D",
+                  color: "#B08343", fontSize: 18, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >←</button>
             )}
+            <div>
+              <h1 style={{
+                fontFamily: "'Nova Cut', cursive", fontSize: 30,
+                color: "#B08343", margin: 0, letterSpacing: 2,
+              }}>
+                {order ? `Pedido ${order.order_name}` : "Gestor de Pedidos"}
+              </h1>
+              {order && (
+                <p style={{ fontSize: 11, color: "#24445D", fontFamily: "monospace", marginTop: 2 }}>
+                  {order.order_id}
+                </p>
+              )}
+            </div>
           </div>
           {order && order.tags.length > 0 && (
             <div style={{ display: "flex", gap: 6 }}>
@@ -797,6 +1024,9 @@ export default function PedidosPage() {
             </div>
           )}
         </div>
+
+        {/* Datos del pedido (cliente, envío) desde la nota */}
+        {order && order.info && <OrderInfoBand info={order.info} />}
 
         {/* Banner pedido alistado */}
         {isAlistado && (
@@ -886,19 +1116,46 @@ export default function PedidosPage() {
                       </span>
                       <div style={{ flex: 1, height: 1, background: "#24445D40" }} />
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {items.map((item) => (
-                        <OrderItemCard
-                          key={item.variant_id}
-                          item={item}
-                          allocation={allocations[item.variant_id] ?? {}}
-                          gestionado={gestionados[item.variant_id] ?? false}
-                          noFisico={noFisicos[item.variant_id] ?? false}
-                          onAllocationChange={handleAllocationChange}
-                          onToggleGestionado={handleToggleGestionado}
-                          onToggleNoFisico={handleToggleNoFisico}
-                        />
-                      ))}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                      {groupByColor(items).map(([colorKey, colorItems]) => {
+                        const meta = COLOR_META[colorKey] ?? COLOR_META.NONE;
+                        return (
+                          <div key={colorKey}>
+                            {/* Subencabezado de color */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7, paddingLeft: 2 }}>
+                              <span style={{
+                                width: 10, height: 10, borderRadius: "50%",
+                                background: meta.dot,
+                                boxShadow: "0 0 0 1px #0E151D, 0 0 0 2px #24445D",
+                                flexShrink: 0,
+                              }} />
+                              <span style={{
+                                fontFamily: "'Philosopher', serif", fontSize: 11, fontWeight: 600,
+                                color: "#8F672E", textTransform: "uppercase", letterSpacing: 1,
+                              }}>
+                                {meta.label}
+                              </span>
+                              <span style={{ fontSize: 10, color: "#5C84A0", fontFamily: "monospace" }}>
+                                {colorItems.length}
+                              </span>
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                              {colorItems.map((item) => (
+                                <OrderItemCard
+                                  key={item.variant_id}
+                                  item={item}
+                                  allocation={allocations[item.variant_id] ?? {}}
+                                  gestionado={gestionados[item.variant_id] ?? false}
+                                  noFisico={noFisicos[item.variant_id] ?? false}
+                                  onAllocationChange={handleAllocationChange}
+                                  onToggleGestionado={handleToggleGestionado}
+                                  onToggleNoFisico={handleToggleNoFisico}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -911,23 +1168,170 @@ export default function PedidosPage() {
               })()}
             </div>
           </div>
-        ) : (
+        ) : loading ? (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 28 }}>
             <img
               src="https://cdn.shopify.com/s/files/1/0710/0029/3568/files/Asset_9_e0d5e097-e5f5-4847-aad0-349d9cae599d.png?v=1759766276"
               alt="The Vault"
-              className={loading ? "vault-loader" : undefined}
-              style={{ width: 340, opacity: loading ? 1 : 0.85, transition: "opacity 0.3s" }}
+              className="vault-loader"
+              style={{ width: 340, opacity: 1 }}
             />
-            {loading && (
-              <p style={{
-                fontFamily: "'Philosopher', serif", fontSize: 13,
-                color: "#8F672E", letterSpacing: 3,
-                textTransform: "uppercase", margin: 0,
-              }}>
-                Cargando pedido...
-              </p>
-            )}
+            <p style={{
+              fontFamily: "'Philosopher', serif", fontSize: 13,
+              color: "#8F672E", letterSpacing: 3,
+              textTransform: "uppercase", margin: 0,
+            }}>
+              Cargando pedido...
+            </p>
+          </div>
+        ) : (
+          <div className="vault-scroll" style={{ flex: 1, overflowY: "auto", padding: "28px", position: "relative" }}>
+
+            {/* Logo de fondo (marca de agua) */}
+            <img
+              src="https://cdn.shopify.com/s/files/1/0710/0029/3568/files/Asset_9_e0d5e097-e5f5-4847-aad0-349d9cae599d.png?v=1759766276"
+              alt=""
+              aria-hidden
+              style={{
+                position: "absolute",
+                top: "50%", left: "50%",
+                transform: "translate(-50%, -50%)",
+                width: 340,
+                opacity: 0.1,
+                filter: "blur(1.5px)",
+                pointerEvents: "none",
+                userSelect: "none",
+                zIndex: 0,
+              }}
+            />
+
+            <div style={{ maxWidth: 1000, margin: "0 auto", width: "100%", position: "relative", zIndex: 1 }}>
+
+              {/* Cabecera de la sección */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                <span style={{
+                  fontFamily: "'Philosopher', serif", fontSize: 13, fontWeight: 700,
+                  color: "#B08343", textTransform: "uppercase", letterSpacing: 1.5,
+                }}>
+                  Pedidos por preparar
+                </span>
+                <span style={{
+                  fontSize: 11, color: "#5C84A0", background: "#122F43",
+                  border: "1px solid #24445D", borderRadius: 20,
+                  padding: "1px 8px", fontFamily: "monospace",
+                }}>
+                  {pendingOrders.length}
+                </span>
+                <div style={{ flex: 1, height: 1, background: "#24445D40" }} />
+                <button
+                  onClick={() => fetchPending()}
+                  disabled={pendingLoading}
+                  style={{
+                    fontSize: 12, fontWeight: 700,
+                    color: "#5C84A0", background: "#122F43",
+                    border: "1px solid #24445D", borderRadius: 20,
+                    padding: "4px 12px", cursor: pendingLoading ? "not-allowed" : "pointer",
+                    fontFamily: "'Philosopher', serif",
+                  }}
+                >
+                  {pendingLoading ? "Actualizando…" : "↻ Actualizar"}
+                </button>
+              </div>
+
+              {pendingError && (
+                <div style={{
+                  padding: "10px 16px", borderRadius: 8, marginBottom: 16,
+                  background: "#2a0e0e", border: "1px solid #7f1d1d",
+                  color: "#fca5a5", fontSize: 13,
+                }}>
+                  ⚠️ {pendingError}
+                </div>
+              )}
+
+              {pendingLoading && pendingOrders.length === 0 ? (
+                <p style={{ color: "#5C84A0", fontSize: 14 }}>Cargando pedidos…</p>
+              ) : pendingOrders.length === 0 ? (
+                <p style={{ color: "#5C84A0", fontSize: 14 }}>
+                  No hay pedidos pendientes por preparar 🎉
+                </p>
+              ) : (
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                  gap: 14,
+                }}>
+                  {pendingOrders.map((p) => (
+                    <button
+                      key={p.order_id}
+                      onClick={() => { setOrderNumber(p.order_name); fetchOrder(p.order_name); }}
+                      style={{
+                        textAlign: "left", cursor: "pointer",
+                        display: "flex", flexDirection: "column", gap: 8,
+                        padding: 16, borderRadius: 12,
+                        border: "1px solid #24445D50", background: "#0E1D2B",
+                        transition: "all 0.18s",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = "#8F672E";
+                        e.currentTarget.style.background = "#122438";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = "#24445D50";
+                        e.currentTarget.style.background = "#0E1D2B";
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{
+                          fontFamily: "'Nova Cut', cursive", fontSize: 22,
+                          color: "#B08343", letterSpacing: 1,
+                        }}>
+                          {p.order_name}
+                        </span>
+                        <span style={{ fontSize: 11, color: "#24445D", fontFamily: "monospace" }}>
+                          {formatDate(p.created_at)}
+                        </span>
+                      </div>
+                      <span style={{
+                        fontSize: 13, color: "#e8d5b7",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        fontFamily: "'Literata', serif",
+                      }}>
+                        {p.customer_name ?? "Sin nombre"}
+                      </span>
+                      {p.tags.length > 0 && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          {p.tags.map((t) => (
+                            <span key={t} style={{
+                              fontSize: 10, fontWeight: 700,
+                              color: "#5C84A0", background: "#122F43",
+                              border: "1px solid #24445D", borderRadius: 20,
+                              padding: "1px 8px", fontFamily: "'Philosopher', serif",
+                            }}>
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 2 }}>
+                        <span style={{
+                          fontSize: 12, color: "#5C84A0", background: "#122F43",
+                          border: "1px solid #24445D50", borderRadius: 20, padding: "2px 10px",
+                          fontFamily: "monospace",
+                        }}>
+                          {p.items_count} íts
+                        </span>
+                        <span style={{
+                          fontSize: 14, fontWeight: 700, color: "#B08343",
+                          fontFamily: "'Philosopher', serif",
+                        }}>
+                          {formatCOP(p.total)}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 

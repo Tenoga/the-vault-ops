@@ -21,6 +21,26 @@ interface RequestBody {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
+
+  // ── Listado de pedidos pendientes (tarjetas del inicio) ──────────────────
+  if (url.searchParams.get("list") === "pending") {
+    const response = await fetch(`${API_BASE}/orders/pending`, {
+      headers: {
+        "x-api-key": API_KEY,
+        "ngrok-skip-browser-warning": "true",
+      },
+    });
+
+    if (!response.ok) {
+      return json(
+        { error: `Error cargando pedidos pendientes (HTTP ${response.status})` },
+        { status: response.status },
+      );
+    }
+
+    return json(await response.json());
+  }
+
   const orderNumber = url.searchParams.get("order");
 
   if (!orderNumber) {

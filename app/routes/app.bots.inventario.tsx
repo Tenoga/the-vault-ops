@@ -10,7 +10,7 @@ interface Job {
   job_id: string;
   archivo: string;
   proveedor: string;
-  estado: "en_cola" | "ejecutando" | "completado" | "error";
+  estado: "en_cola" | "ejecutando" | "completado" | "error" | "cancelado";
   fase: string | null;
   total: number;
   procesadas: number;
@@ -67,6 +67,7 @@ const ESTADO_COLOR: Record<string, { bg: string; border: string; text: string }>
   ejecutando: { bg: "#122F4380", border: "#24445D", text: "#93c5fd" },
   completado: { bg: "#8F672E40", border: "#8F672E", text: "#e8d5b7" },
   error: { bg: "#2a0e0e", border: "#7f1d1d", text: "#fca5a5" },
+  cancelado: { bg: "#3a2f1f", border: "#6A481C", text: "#d6b88a" },
 };
 
 function formatearEta(segundos: number | null | undefined): string {
@@ -101,6 +102,7 @@ export default function InventarioPage() {
   const [dropdownAbierto, setDropdownAbierto] = useState(false);
   const [filtroProv, setFiltroProv] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [cancelSolicitado, setCancelSolicitado] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -148,7 +150,7 @@ export default function InventarioPage() {
 
   // Polling del job activo cada 3s hasta que termine
   useEffect(() => {
-    if (!job || job.estado === "completado" || job.estado === "error") return;
+    if (!job || job.estado === "completado" || job.estado === "error" || job.estado === "cancelado") return;
 
     const timer = setInterval(async () => {
       try {
@@ -157,7 +159,7 @@ export default function InventarioPage() {
         const j: Job = await r.json();
         setJob(j);
 
-        if (j.estado === "completado" || j.estado === "error") {
+        if (j.estado === "completado" || j.estado === "error" || j.estado === "cancelado") {
           const rr = await fetch(`/api/inventario/jobs/${j.job_id}?result=1`);
           if (rr.ok) setResultado(await rr.json());
           cargarHistorial();
@@ -215,11 +217,24 @@ export default function InventarioPage() {
     }
   }
 
+  async function cancelarCargue() {
+    if (!job) return;
+    setCancelSolicitado(true);
+    try {
+      const r = await fetch(`/api/inventario/jobs/${job.job_id}/cancelar`, { method: "POST" });
+      if (r.ok) setJob(await r.json());
+      else setCancelSolicitado(false); // falló: permitir reintentar
+    } catch {
+      setCancelSolicitado(false);
+    }
+  }
+
   async function verJob(j: Job) {
     setError(null);
     setResultado(null);
+    setCancelSolicitado(false);
     setJob(j);
-    if (j.estado === "completado" || j.estado === "error") {
+    if (j.estado === "completado" || j.estado === "error" || j.estado === "cancelado") {
       try {
         const r = await fetch(`/api/inventario/jobs/${j.job_id}?result=1`);
         if (r.ok) setResultado(await r.json());
@@ -235,6 +250,7 @@ export default function InventarioPage() {
     setFile(null);
     setValidacion(null);
     setError(null);
+    setCancelSolicitado(false);
   }
 
   const puedeIniciar = !!file && validacion?.valido === true && !!proveedor.trim() && !subiendo;
@@ -520,14 +536,29 @@ export default function InventarioPage() {
               <span style={{ fontFamily: "monospace", fontSize: 13, color: "#b8a07a" }}>{job.archivo}</span>
               <span style={{ fontSize: 12, color: "#8F672E", marginLeft: 10 }}>proveedor: {job.proveedor}</span>
             </div>
-            <span style={{
-              fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1,
-              padding: "3px 12px", borderRadius: 20,
-              background: ESTADO_COLOR[job.estado]?.bg, border: `1px solid ${ESTADO_COLOR[job.estado]?.border}`,
-              color: ESTADO_COLOR[job.estado]?.text,
-            }}>
-              {job.estado.replace("_", " ")}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {(job.estado === "ejecutando" || job.estado === "en_cola") && (
+                <button
+                  onClick={cancelarCargue}
+                  disabled={cancelSolicitado}
+                  style={{
+                    ...botonCancelar,
+                    opacity: cancelSolicitado ? 0.6 : 1,
+                    cursor: cancelSolicitado ? "default" : "pointer",
+                  }}
+                >
+                  {cancelSolicitado ? "Deteniendo…" : "⏹ Detener"}
+                </button>
+              )}
+              <span style={{
+                fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1,
+                padding: "3px 12px", borderRadius: 20,
+                background: ESTADO_COLOR[job.estado]?.bg, border: `1px solid ${ESTADO_COLOR[job.estado]?.border}`,
+                color: ESTADO_COLOR[job.estado]?.text,
+              }}>
+                {job.estado.replace("_", " ")}
+              </span>
+            </div>
           </div>
 
           {/* Progreso en vivo */}
@@ -591,9 +622,17 @@ export default function InventarioPage() {
             </div>
           )}
 
-          {/* Resumen final */}
-          {job.estado === "completado" && (
+          {/* Resumen final (completado o detenido) */}
+          {(job.estado === "completado" || job.estado === "cancelado") && (
             <>
+              {job.estado === "cancelado" && (
+                <div style={{
+                  padding: "10px 16px", borderRadius: 8, background: "#3a2f1f",
+                  border: "1px solid #6A481C", color: "#d6b88a", fontSize: 13, marginBottom: 16,
+                }}>
+                  ⏹ Cargue detenido — se procesaron {job.procesadas} de {job.total} cartas (lo cargado quedó guardado en Shopify).
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
                 {[
                   { label: "Total", value: job.total, accent: "#24445D" },
@@ -755,5 +794,17 @@ const botonSecundario: React.CSSProperties = {
   fontWeight: 700,
   fontSize: 13,
   cursor: "pointer",
+  transition: "all 0.2s",
+};
+
+const botonCancelar: React.CSSProperties = {
+  padding: "10px 18px",
+  background: "#2a0e0e",
+  color: "#fca5a5",
+  border: "1px solid #7f1d1d",
+  borderRadius: 8,
+  fontFamily: "'Philosopher', serif",
+  fontWeight: 700,
+  fontSize: 13,
   transition: "all 0.2s",
 };
