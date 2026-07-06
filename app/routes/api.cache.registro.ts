@@ -42,32 +42,10 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    // 2. PUSH CACHE
-    const pushResponse = await fetch(`${API_URL}/cache/push`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY || "",
-      },
-    });
-
-    const pushData = await pushResponse.json().catch(() => ({}));
-
-    if (!pushResponse.ok) {
-      return json(
-        {
-          error: "Cache actualizado pero falló el push",
-          update: updateData,
-          push: pushData,
-        },
-        { status: 500 }
-      );
-    }
-
-    // 3. RESPUESTA FINAL
+    // 2. RESPUESTA FINAL (sin push: el cache es local, git eliminado 2026-07-06;
+    // el backend ademas quita la carta de no-encontradas en el mismo update)
     return json({
       ...updateData,
-      push: pushData,
       success: true,
     });
   } catch (error) {

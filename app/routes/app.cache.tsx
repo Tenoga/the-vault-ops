@@ -2,6 +2,7 @@ import { Outlet, Link, useLocation } from "react-router";
 
 const navLinks = [
   { to: "/app/cache", label: "Inicio", end: true },
+  { to: "/app/cache/pendientes", label: "Pendientes" },
   { to: "/app/cache/registro", label: "Registrar / Actualizar" },
   { to: "/app/cache/consulta", label: "Consultar" },
   { to: "/app/cache/delete", label: "Eliminar" },
