@@ -232,15 +232,207 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
   );
 }
 
+// Popup de detalle: imagen grande a la izquierda; a la derecha toda la info
+// con las URLs intentadas en texto amplio y clicable, y el registro ahí mismo.
+function DetallePendiente({ p, img, imgOk, meta, url, setUrl, guardando, onRegistrar, onClose }: {
+  p: Pendiente;
+  img: string;
+  imgOk: boolean;
+  meta: { nombre: string; emoji: string; accent: string };
+  url: string;
+  setUrl: (v: string) => void;
+  guardando: boolean;
+  onRegistrar: () => void;
+  onClose: () => void;
+}) {
+  const [zoom, setZoom] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const fecha = (p.ultima_vez_usado || "").slice(0, 16);
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(14, 21, 29, 0.92)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 24, cursor: "zoom-out",
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        position: "relative", cursor: "default",
+        background: "#0E1D2B", border: `1px solid ${meta.accent}`,
+        borderRadius: 16, boxShadow: `0 0 60px ${meta.accent}30`,
+        maxWidth: 1500, width: "100%", maxHeight: "90vh",
+        display: "flex", gap: 28, padding: 24, flexWrap: "wrap",
+        overflowY: "auto",
+      }}>
+        {/* Cerrar */}
+        <button onClick={onClose} style={{
+          position: "absolute", top: 12, right: 12, width: 32, height: 32, borderRadius: "50%",
+          background: "#0E151D", border: "1px solid #B08343", color: "#B08343",
+          fontSize: 17, fontWeight: 700, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1,
+        }}>×</button>
+
+        {/* Izquierda: imagen a la altura completa del contenido (click → zoom) */}
+        {zoom && imgOk && <Lightbox src={img} alt={p.titulo} onClose={() => setZoom(false)} />}
+        <div style={{ flex: "0 0 auto", display: "flex", alignItems: "stretch", justifyContent: "center" }}>
+          <img
+            src={imgOk ? img : LOGO_FALLBACK}
+            alt={p.titulo}
+            onClick={() => imgOk && setZoom(true)}
+            style={{
+              height: "100%", width: "auto",
+              maxHeight: "calc(90vh - 48px)", maxWidth: "min(440px, 100%)",
+              objectFit: "contain", borderRadius: 14, border: "1px solid #24445D",
+              boxShadow: "0 8px 30px rgba(0,0,0,0.5)", display: "block",
+              cursor: imgOk ? "zoom-in" : "default",
+            }}
+          />
+        </div>
+
+        {/* Derecha: info + URLs + registro */}
+        <div style={{ flex: 1, minWidth: 320, display: "flex", flexDirection: "column", gap: 12 }}>
+
+          {/* Badges */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingRight: 36 }}>
+            <span style={{
+              fontSize: 12, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
+              background: "#0E151D", border: `1px solid ${meta.accent}`, color: meta.accent,
+              fontFamily: "'Philosopher', serif", whiteSpace: "nowrap",
+            }}>
+              {meta.emoji} {meta.nombre}
+            </span>
+            {p.finishing === "Foil" ? (
+              <span style={{
+                fontSize: 12, fontWeight: 900, padding: "3px 14px", borderRadius: 20,
+                background: "linear-gradient(90deg, #FF00FF, #FF69FF, #FF00FF)", color: "#fff",
+                border: "2px solid #FF00FF", fontFamily: "'Philosopher', serif",
+                boxShadow: "0 0 14px #FF00FF80", letterSpacing: 1.5, textShadow: "0 0 8px #fff",
+              }}>✨ FOIL</span>
+            ) : (
+              <span style={{
+                fontSize: 12, fontWeight: 700, padding: "3px 12px", borderRadius: 20,
+                background: "#122F43", color: "#5C84A0", border: "1px solid #24445D",
+                fontFamily: "'Philosopher', serif",
+              }}>🃏 No Foil</span>
+            )}
+            {fecha && <span style={{ fontSize: 12, color: "#44546A" }}>{fecha}</span>}
+          </div>
+
+          {/* Título + uuid */}
+          <div>
+            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "'Philosopher', serif", color: "#e8d5b7" }}>
+              {p.titulo}
+            </div>
+            <div style={{ fontSize: 12, fontFamily: "monospace", color: "#44546A", marginTop: 2 }}>
+              {p.uuid}
+            </div>
+            {p.comentario && (
+              <div style={{ fontSize: 12.5, color: "#8F672E", marginTop: 6 }}>{p.comentario}</div>
+            )}
+          </div>
+
+          <a
+            href={`https://starcitygames.com/search/?search_query=${encodeURIComponent(p.titulo)}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              alignSelf: "flex-start", fontSize: 14, color: "#B08343", textDecoration: "none",
+              fontFamily: "'Philosopher', serif", fontWeight: 700,
+              padding: "8px 16px", background: "#0E151D", border: "1px solid #6A481C", borderRadius: 8,
+            }}
+          >
+            🔎 Buscar "{p.titulo}" en SCG ↗
+          </a>
+
+          {/* URLs intentadas */}
+          <div>
+            <div style={{
+              fontSize: 12, fontWeight: 700, color: "#8F672E", textTransform: "uppercase",
+              letterSpacing: 1, fontFamily: "'Philosopher', serif", marginBottom: 6,
+            }}>
+              URLs intentadas por el bot ({p.urls_intentadas.length})
+            </div>
+            <div style={{
+              background: "#0E151D", border: "1px solid #24445D", borderRadius: 10,
+              maxHeight: 260, overflowY: "auto",
+            }}>
+              {p.urls_intentadas.length === 0 && (
+                <div style={{ padding: 14, fontSize: 13, color: "#44546A" }}>
+                  El bot no dejó registro de URLs para esta carta.
+                </div>
+              )}
+              {p.urls_intentadas.map((u, i) => (
+                <a
+                  key={u}
+                  href={u}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: "flex", gap: 10, alignItems: "baseline",
+                    padding: "9px 14px", textDecoration: "none",
+                    borderBottom: i < p.urls_intentadas.length - 1 ? "1px solid #24445D40" : "none",
+                    transition: "background 0.15s",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#122F43")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <span style={{ fontSize: 11, color: "#44546A", fontFamily: "'Philosopher', serif", fontWeight: 700, flexShrink: 0 }}>
+                    {i + 1}.
+                  </span>
+                  <span style={{ fontSize: 13.5, fontFamily: "monospace", color: "#93c5fd", overflowWrap: "anywhere", lineHeight: 1.5 }}>
+                    {u}
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: "#5C84A0", flexShrink: 0 }}>↗</span>
+                </a>
+              ))}
+            </div>
+          </div>
+
+          {/* Registro */}
+          <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="Pega aquí la URL correcta del producto en SCG..."
+              style={{
+                flex: 1, padding: "10px 12px", background: "#0E151D",
+                border: "1px solid #24445D", borderRadius: 8, color: "#e8d5b7",
+                fontSize: 13, fontFamily: "monospace", outline: "none", boxSizing: "border-box",
+              }}
+            />
+            <button
+              onClick={onRegistrar}
+              disabled={guardando}
+              style={{
+                padding: "10px 22px", background: guardando ? "#442E17" : "#8F672E",
+                color: "#e8d5b7", border: "1px solid #6A481C", borderRadius: 8,
+                fontFamily: "'Philosopher', serif", fontWeight: 700, fontSize: 14,
+                cursor: guardando ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {guardando ? "Guardando..." : "Registrar en cache"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PendienteCard({ p, onRegistrada, onError }: {
   p: Pendiente;
   onRegistrada: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
-  const [lightbox, setLightbox] = useState(false);
   const [url, setUrl] = useState("");
   const [guardando, setGuardando] = useState(false);
-  const [verUrls, setVerUrls] = useState(false);
+  const [detalle, setDetalle] = useState(false);
   const [imgOk, setImgOk] = useState(true);
   const meta = metaOrigen(p.origen);
   const img = imagenDe(p.uuid);
@@ -278,12 +470,36 @@ function PendienteCard({ p, onRegistrada, onError }: {
 
   return (
     <>
-      {lightbox && imgOk && <Lightbox src={img} alt={p.titulo} onClose={() => setLightbox(false)} />}
-      <div style={{
-        display: "flex", flexDirection: "column", gap: 10,
-        background: "#0E1D2B", border: `1px solid ${meta.accent}55`,
-        borderTop: `3px solid ${meta.accent}`, borderRadius: 12, padding: 12,
-      }}>
+      {detalle && (
+        <DetallePendiente
+          p={p}
+          img={img}
+          imgOk={imgOk}
+          meta={meta}
+          url={url}
+          setUrl={setUrl}
+          guardando={guardando}
+          onRegistrar={registrar}
+          onClose={() => setDetalle(false)}
+        />
+      )}
+      <div
+        onClick={() => setDetalle(true)}
+        style={{
+          display: "flex", flexDirection: "column", gap: 10,
+          background: "#0E1D2B", border: `1px solid ${meta.accent}55`,
+          borderTop: `3px solid ${meta.accent}`, borderRadius: 12, padding: 12,
+          cursor: "pointer", transition: "border-color 0.2s, box-shadow 0.2s",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.borderColor = meta.accent;
+          e.currentTarget.style.boxShadow = `0 0 18px ${meta.accent}25`;
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.borderColor = `${meta.accent}55`;
+          e.currentTarget.style.boxShadow = "none";
+        }}
+      >
         {/* origen + fecha */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
           <span style={{
@@ -296,17 +512,11 @@ function PendienteCard({ p, onRegistrada, onError }: {
           {fecha && <span style={{ fontSize: 11, color: "#44546A" }}>{fecha}</span>}
         </div>
 
-        {/* imagen (click → grande) */}
-        <div
-          onClick={() => imgOk && setLightbox(true)}
-          style={{
-            width: "100%", aspectRatio: "0.716",
-            borderRadius: 10, overflow: "hidden", border: "1px solid #24445D", background: "#0E151D",
-            cursor: imgOk ? "zoom-in" : "default", transition: "border-color 0.2s",
-          }}
-          onMouseEnter={(e) => { if (imgOk) e.currentTarget.style.borderColor = "#B08343"; }}
-          onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#24445D")}
-        >
+        {/* imagen (click → abre el detalle, como toda la tarjeta) */}
+        <div style={{
+          width: "100%", aspectRatio: "0.716",
+          borderRadius: 10, overflow: "hidden", border: "1px solid #24445D", background: "#0E151D",
+        }}>
           <img
             src={img}
             alt={p.titulo}
@@ -345,6 +555,7 @@ function PendienteCard({ p, onRegistrada, onError }: {
             href={`https://starcitygames.com/search/?search_query=${encodeURIComponent(p.titulo)}`}
             target="_blank"
             rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
             style={{
               fontSize: 12, color: "#B08343", textDecoration: "none",
               fontFamily: "'Philosopher', serif", fontWeight: 700,
@@ -352,36 +563,22 @@ function PendienteCard({ p, onRegistrada, onError }: {
           >
             🔎 Buscar en SCG ↗
           </a>
-          {p.urls_intentadas.length > 0 && (
-            <button
-              onClick={() => setVerUrls((v) => !v)}
-              style={{
-                background: "transparent", border: "none", color: "#5C84A0",
-                cursor: "pointer", fontSize: 11, fontFamily: "'Philosopher', serif",
-                fontWeight: 700, padding: 0,
-              }}
-            >
-              {verUrls ? "▾ ocultar" : `▸ intentadas (${p.urls_intentadas.length})`}
-            </button>
-          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); setDetalle(true); }}
+            style={{
+              background: "transparent", border: "none", color: "#5C84A0",
+              cursor: "pointer", fontSize: 11, fontFamily: "'Philosopher', serif",
+              fontWeight: 700, padding: 0,
+            }}
+          >
+            ▸ intentadas ({p.urls_intentadas.length})
+          </button>
         </div>
-
-        {verUrls && (
-          <div style={{
-            padding: "8px 10px", background: "#0E151D",
-            border: "1px solid #24445D40", borderRadius: 8, maxHeight: 120, overflowY: "auto",
-          }}>
-            {p.urls_intentadas.map((u) => (
-              <div key={u} style={{ fontSize: 10.5, fontFamily: "monospace", overflowWrap: "anywhere", marginBottom: 4 }}>
-                <a href={u} target="_blank" rel="noreferrer" style={{ color: "#44546A" }}>{u}</a>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* URL + registrar */}
         <input
           value={url}
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="URL del producto en SCG..."
           style={{
@@ -391,7 +588,7 @@ function PendienteCard({ p, onRegistrada, onError }: {
           }}
         />
         <button
-          onClick={registrar}
+          onClick={(e) => { e.stopPropagation(); registrar(); }}
           disabled={guardando}
           style={{
             width: "100%", padding: "9px 0", background: guardando ? "#442E17" : "#8F672E",

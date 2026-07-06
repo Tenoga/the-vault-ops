@@ -986,7 +986,13 @@ export default function PedidosPage() {
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
             {order && (
               <button
-                onClick={() => { setOrder(null); setError(null); setSuccessMsg(null); }}
+                onClick={() => {
+                  setOrder(null); setError(null); setSuccessMsg(null);
+                  // Refrescar pendientes al volver: el refresh post-procesar corre
+                  // apenas termina el POST y Shopify puede aún no reflejar el
+                  // cambio; al regresar ya pasaron segundos y la foto es la real.
+                  fetchPending();
+                }}
                 title="Volver a pendientes"
                 style={{
                   width: 36, height: 36, borderRadius: 8, flexShrink: 0,
