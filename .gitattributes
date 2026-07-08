@@ -1,0 +1,5 @@
+# Los hooks de git y los scripts shell DEBEN usar finales de línea LF,
+# aunque se editen en Windows. Con CRLF el shebang (#!/bin/sh) se rompe
+# al ejecutarlos en Linux/macOS ("bad interpreter").
+githooks/pre-commit text eol=lf
+*.sh            text eol=lf

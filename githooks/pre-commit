@@ -1,0 +1,25 @@
+#!/bin/sh
+# Bloquea el commit si gitleaks detecta secretos en lo que está en staging.
+# Versionado en el repo. Actívalo una vez por clon con:
+#     git config core.hooksPath githooks
+# Requiere gitleaks en el PATH: winget install Gitleaks.Gitleaks  (o brew install gitleaks)
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-commit] gitleaks no encontrado en PATH; se omite el escaneo."
+  echo "             Instala con: winget install Gitleaks.Gitleaks  (o: brew install gitleaks)"
+  exit 0
+fi
+
+gitleaks protect --staged --redact --verbose
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "[pre-commit] gitleaks detectó posibles secretos. Commit abortado."
+  echo "             Revisa lo de arriba. Si es un falso positivo, puedes:"
+  echo "               - añadir el archivo a .gitignore, o"
+  echo "               - saltar el hook SOLO si estás seguro: git commit --no-verify"
+  exit 1
+fi
+
+exit 0
