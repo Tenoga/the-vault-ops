@@ -1,4 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
+import { Link } from "react-router";
+
+import { findCaja, type Ubicacion } from "../lib/ubicaciones";
 
 // ─── Paleta de marca ──────────────────────────────────────────────────────────
 // #442E17 #0E1D2B #6A481C #122F43 #8F672E #24445D #0E151D #B08343 #5C84A0
@@ -100,6 +103,47 @@ function isSinProveedor(providers: string[]) {
 
 function totalAllocated(alloc: ItemAllocation) {
   return Object.values(alloc).reduce((s, v) => s + v, 0);
+}
+
+// ─── Idioma (desde el sufijo del SKU) ───────────────────────────────────────────
+// El SKU sigue el formato {SET}-{COLECTOR}-{FINISH}-{VARIANTE}-{IDIOMA}
+// (p. ej. "WOC-097-NF-STD-EN"). El último segmento es el código de idioma, que el
+// cargador escribe SIEMPRE, incluido inglés. Lo mismo que el `finishing`, que ya
+// se deriva del SKU. Se muestra para que quien alista sepa qué versión tomar.
+
+const IDIOMA_LABEL: Record<string, string> = {
+  EN: "Inglés",
+  ES: "Español",
+  JA: "Japonés",
+  PT: "Portugués",
+  DE: "Alemán",
+  FR: "Francés",
+  IT: "Italiano",
+  RU: "Ruso",
+  KO: "Coreano",
+  ZHS: "Chino simpl.",
+  ZHT: "Chino trad.",
+  ZH: "Chino",
+};
+
+function parseIdioma(sku?: string | null): { code: string; label: string } | null {
+  if (!sku) return null;
+  const segments = sku.trim().toUpperCase().split("-").filter(Boolean);
+  if (segments.length === 0) return null;
+  const code = segments[segments.length - 1];
+  const label = IDIOMA_LABEL[code];
+  return label ? { code, label } : null;
+}
+
+// ─── Letra inicial (para ubicar físicamente la carta) ───────────────────────────
+// El inventario está archivado alfabéticamente por el nombre canónico en inglés
+// (el título del producto). Mostramos la inicial para saber en qué tramo buscar.
+// Ignora artículos/símbolos iniciales y cae en "#" si no hay letra ni número.
+
+function initialLetter(title?: string | null): string {
+  if (!title) return "#";
+  const match = title.trim().toUpperCase().match(/[A-Z0-9]/);
+  return match ? match[0] : "#";
 }
 
 // ─── Agrupación por color (MTG) ────────────────────────────────────────────────
@@ -347,18 +391,41 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
 // ─── Order Item Card ──────────────────────────────────────────────────────────
 
 function OrderItemCard({
-  item, allocation, gestionado, noFisico, onAllocationChange, onToggleGestionado, onToggleNoFisico,
+  item, allocation, gestionado, noFisico, ubicaciones, onAllocationChange, onToggleGestionado, onToggleNoFisico,
 }: {
   item: OrderItem;
   allocation: ItemAllocation;
   gestionado: boolean;
   noFisico: boolean;
+  ubicaciones: Ubicacion[];
   onAllocationChange: (variantId: string, alloc: ItemAllocation) => void;
   onToggleGestionado: (variantId: string) => void;
   onToggleNoFisico: (variantId: string) => void;
 }) {
   const [lightbox, setLightbox] = useState(false);
   const { providers, quantity } = item;
+  const letra = initialLetter(item.title);
+  const idioma = parseIdioma(item.sku);
+
+  // Caja física: depende del proveedor que se vaya a alistar. Se usan los
+  // proveedores con cantidad asignada; si aún no se asigna nada pero solo hay
+  // uno, se usa ese. La búsqueda es por (proveedor, color, CMC, letra inicial).
+  const color = colorGroupKey(item.color_exacto);
+  const cmc = item.cmc ?? 999;
+  const provsAsignados = isSinProveedor(providers)
+    ? []
+    : Object.entries(allocation).filter(([, q]) => q > 0).map(([p]) => p);
+  const provsUbicar =
+    provsAsignados.length > 0
+      ? provsAsignados
+      : providers.length === 1 && !isSinProveedor(providers)
+        ? [providers[0]]
+        : [];
+  const cajas = provsUbicar.map((prov) => ({
+    prov,
+    caja: findCaja(ubicaciones, { proveedor: prov, color, cmc, letra }),
+  }));
+
   const proveedorCompleto = isSinProveedor(providers)
     ? true
     : providers.length === 1
@@ -536,6 +603,114 @@ function OrderItemCard({
           onChange={(alloc) => onAllocationChange(item.variant_id, alloc)}
         />
       </div>
+
+      {/* Ubicación física: dónde y en qué idioma buscar la carta. El inventario
+          está archivado alfabéticamente por nombre canónico en inglés, así que la
+          letra inicial dice el tramo. (La caja exacta llegará en una fase futura.) */}
+      <div style={{
+        flexShrink: 0, width: 176, alignSelf: "stretch",
+        display: "flex", flexDirection: "column", gap: 10,
+        padding: "14px 12px", borderRadius: 10,
+        background: "#0E151D", border: "1px solid #24445D50",
+      }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: "#5C84A0",
+          textTransform: "uppercase", letterSpacing: 1.5,
+          fontFamily: "'Philosopher', serif", textAlign: "center",
+        }}>
+          Dónde buscar
+        </span>
+
+        {/* Letra inicial (tramo alfabético) */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <div style={{
+            width: 66, height: 66, borderRadius: 12,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "#1a1206", border: "2px solid #8F672E",
+            boxShadow: "inset 0 0 20px #6A481C20",
+          }}>
+            <span style={{
+              fontFamily: "'Nova Cut', cursive", fontSize: 40, lineHeight: 1,
+              color: "#B08343",
+            }}>
+              {letra}
+            </span>
+          </div>
+          <span style={{
+            fontSize: 10, color: "#5C84A0", fontFamily: "'Philosopher', serif",
+            textTransform: "uppercase", letterSpacing: 1,
+          }}>
+            Alfabético
+          </span>
+        </div>
+
+        {/* Idioma de la variante */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+          padding: "7px 8px", borderRadius: 8,
+          background: idioma ? "#122F43" : "#0E1D2B",
+          border: `1px solid ${idioma ? "#24445D" : "#24445D50"}`,
+        }}>
+          <span style={{ fontSize: 15 }} aria-hidden>🌐</span>
+          <span style={{
+            fontSize: 13, fontWeight: 700,
+            color: idioma ? "#e8d5b7" : "#5C84A0",
+            fontFamily: "'Philosopher', serif",
+          }}>
+            {idioma ? idioma.label : "Idioma —"}
+          </span>
+        </div>
+
+        {/* Caja física — según el proveedor que se vaya a alistar */}
+        {!isSinProveedor(providers) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{
+              fontSize: 10, fontWeight: 700, color: "#5C84A0",
+              textTransform: "uppercase", letterSpacing: 1.5,
+              fontFamily: "'Philosopher', serif", textAlign: "center",
+            }}>
+              Caja
+            </span>
+
+            {cajas.length === 0 ? (
+              <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
+                Elige proveedor
+              </span>
+            ) : (
+              cajas.map(({ prov, caja }) => (
+                <div key={prov} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {cajas.length > 1 && (
+                    <span style={{ fontSize: 10, color: "#8F672E", textAlign: "center", fontFamily: "'Literata', serif" }}>
+                      {prov}
+                    </span>
+                  )}
+                  {caja ? (
+                    <div style={{
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
+                      padding: "8px", borderRadius: 8,
+                      background: "#1a1206", border: "1px solid #8F672E",
+                    }}>
+                      <span style={{
+                        fontFamily: "'Philosopher', serif", fontSize: 14, fontWeight: 700,
+                        color: "#B08343", textAlign: "center", lineHeight: 1.2,
+                      }}>
+                        {caja.nombre}
+                      </span>
+                      <span style={{ fontSize: 10, color: "#5C84A0", fontFamily: "monospace" }}>
+                        {caja.letraDesde}–{caja.letraHasta}
+                      </span>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
+                      Sin caja configurada
+                    </span>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </div>
     </div>
     </>
   );
@@ -566,7 +741,9 @@ function OrderInfoBand({ info }: { info: OrderInfo }) {
   };
 
   return (
-    <div style={{ padding: "12px 28px 0", flexShrink: 0 }}>
+    // Vive dentro de la columna scrolleable del pedido (sin padding propio:
+    // la columna ya da separación con su gap)
+    <div>
       <div style={{
         display: "flex", flexWrap: "wrap", gap: "12px 32px",
         padding: "14px 18px", borderRadius: 10,
@@ -632,6 +809,7 @@ export default function PedidosPage() {
   const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [pendingError, setPendingError] = useState<string | null>(null);
+  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([]);
 
   const fetchOrder = useCallback(async (numArg?: string) => {
     const num = (numArg ?? orderNumber).replace("#", "").trim();
@@ -700,6 +878,21 @@ export default function PedidosPage() {
   useEffect(() => {
     fetchPending();
   }, [fetchPending]);
+
+  // Mapa de cajas físicas (configurable en /app/ubicaciones). Se carga una vez;
+  // si falla, la vista sigue funcionando sin la ubicación.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/ubicaciones");
+        if (!res.ok) return;
+        const data = await res.json();
+        setUbicaciones(Array.isArray(data?.ubicaciones) ? data.ubicaciones : []);
+      } catch {
+        /* silencioso: la ubicación es informativa, no bloquea el flujo */
+      }
+    })();
+  }, []);
 
   const handleAllocationChange = useCallback(
     (variantId: string, alloc: ItemAllocation) => {
@@ -930,6 +1123,35 @@ export default function PedidosPage() {
           </ol>
         </div>
 
+        {/* Configurar mapa de cajas — solo en la vista inicial (sin pedido
+            cargado); al traer un pedido este acceso desaparece. */}
+        {!order && (
+          <>
+            <div style={{ height: 1, background: "#24445D40", margin: "0 20px" }} />
+            <div style={{ padding: "16px 20px" }}>
+              <Link
+                to="/app/ubicaciones"
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  width: "100%", padding: "9px 0", boxSizing: "border-box",
+                  background: "#122F43", color: "#B08343",
+                  border: "1px solid #24445D", borderRadius: 8,
+                  fontFamily: "'Philosopher', serif", fontWeight: 700, fontSize: 13,
+                  textDecoration: "none",
+                }}
+              >
+                📦 Configurar cajas
+              </Link>
+              <p style={{
+                fontSize: 10, color: "#5C84A0", textAlign: "center",
+                marginTop: 8, lineHeight: 1.4,
+              }}>
+                Define dónde se archiva cada carta (proveedor · color · coste · letra).
+              </p>
+            </div>
+          </>
+        )}
+
         {/* Stats */}
         {stats && (
           <>
@@ -976,78 +1198,21 @@ export default function PedidosPage() {
       {/* ── Main ── */}
       <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
 
-        {/* Top bar */}
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "14px 28px",
-          borderBottom: "1px solid #24445D50",
-          background: "#0E1D2B", flexShrink: 0,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            {order && (
-              <button
-                onClick={() => {
-                  setOrder(null); setError(null); setSuccessMsg(null);
-                  // Refrescar pendientes al volver: el refresh post-procesar corre
-                  // apenas termina el POST y Shopify puede aún no reflejar el
-                  // cambio; al regresar ya pasaron segundos y la foto es la real.
-                  fetchPending();
-                }}
-                title="Volver a pendientes"
-                style={{
-                  width: 36, height: 36, borderRadius: 8, flexShrink: 0,
-                  background: "#122F43", border: "1px solid #24445D",
-                  color: "#B08343", fontSize: 18, cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >←</button>
-            )}
-            <div>
-              <h1 style={{
-                fontFamily: "'Nova Cut', cursive", fontSize: 30,
-                color: "#B08343", margin: 0, letterSpacing: 2,
-              }}>
-                {order ? `Pedido ${order.order_name}` : "Gestor de Pedidos"}
-              </h1>
-              {order && (
-                <p style={{ fontSize: 11, color: "#24445D", fontFamily: "monospace", marginTop: 2 }}>
-                  {order.order_id}
-                </p>
-              )}
-            </div>
-          </div>
-          {order && order.tags.length > 0 && (
-            <div style={{ display: "flex", gap: 6 }}>
-              {order.tags.map((tag) => (
-                <span key={tag} style={{
-                  fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
-                  background: "#122F43", color: "#5C84A0", border: "1px solid #24445D",
-                  fontFamily: "'Philosopher', serif",
-                }}>
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Datos del pedido (cliente, envío) desde la nota */}
-        {order && order.info && <OrderInfoBand info={order.info} />}
-
-        {/* Banner pedido alistado */}
-        {isAlistado && (
+        {/* Top bar (solo en la vista de pendientes; el header del pedido vive
+            DENTRO del scroll para que desaparezca al scrollear) */}
+        {!order && (
           <div style={{
-            padding: "12px 28px 0", flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "14px 28px",
+            borderBottom: "1px solid #24445D50",
+            background: "#0E1D2B", flexShrink: 0,
           }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "12px 18px", borderRadius: 8,
-              background: "#1a0a00", border: "2px solid #F97316",
-              color: "#FED7AA", fontSize: 13, fontWeight: 600,
-              fontFamily: "'Philosopher', serif",
+            <h1 style={{
+              fontFamily: "'Nova Cut', cursive", fontSize: 30,
+              color: "#B08343", margin: 0, letterSpacing: 2,
             }}>
-              🔒 Este pedido ya fue <strong style={{ color: "#F97316", marginLeft: 4, marginRight: 4 }}>ALISTADO</strong> — no se permiten modificaciones ni en Shopify ni en el Excel.
-            </div>
+              Gestor de Pedidos
+            </h1>
           </div>
         )}
 
@@ -1078,10 +1243,74 @@ export default function PedidosPage() {
           </div>
         )}
 
-        {/* Lista items */}
+        {/* Lista items — el header del pedido, la info del cliente y la acción
+            final viven DENTRO del scroll: no roban espacio de trabajo */}
         {order ? (
           <div className="vault-scroll" style={{ flex: 1, overflowY: "auto", padding: "20px 28px" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 900, margin: "0 auto", width: "100%" }}>
+
+              {/* Header del pedido (scrollea con el contenido) */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <button
+                    onClick={() => {
+                      setOrder(null); setError(null); setSuccessMsg(null);
+                      // Refrescar pendientes al volver: el refresh post-procesar corre
+                      // apenas termina el POST y Shopify puede aún no reflejar el
+                      // cambio; al regresar ya pasaron segundos y la foto es la real.
+                      fetchPending();
+                    }}
+                    title="Volver a pendientes"
+                    style={{
+                      width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                      background: "#122F43", border: "1px solid #24445D",
+                      color: "#B08343", fontSize: 18, cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >←</button>
+                  <div>
+                    <h1 style={{
+                      fontFamily: "'Nova Cut', cursive", fontSize: 30,
+                      color: "#B08343", margin: 0, letterSpacing: 2,
+                    }}>
+                      Pedido {order.order_name}
+                    </h1>
+                    <p style={{ fontSize: 11, color: "#24445D", fontFamily: "monospace", marginTop: 2 }}>
+                      {order.order_id}
+                    </p>
+                  </div>
+                </div>
+                {order.tags.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {order.tags.map((tag) => (
+                      <span key={tag} style={{
+                        fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
+                        background: "#122F43", color: "#5C84A0", border: "1px solid #24445D",
+                        fontFamily: "'Philosopher', serif",
+                      }}>
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Datos del pedido (cliente, envío) desde la nota */}
+              {order.info && <OrderInfoBand info={order.info} />}
+
+              {/* Banner pedido alistado */}
+              {isAlistado && (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "12px 18px", borderRadius: 8,
+                  background: "#1a0a00", border: "2px solid #F97316",
+                  color: "#FED7AA", fontSize: 13, fontWeight: 600,
+                  fontFamily: "'Philosopher', serif",
+                }}>
+                  🔒 Este pedido ya fue <strong style={{ color: "#F97316", marginLeft: 4, marginRight: 4 }}>ALISTADO</strong> — no se permiten modificaciones ni en Shopify ni en el Excel.
+                </div>
+              )}
+
               {(() => {
                 const singles: Record<string, typeof order.items> = {};
                 const multiples: typeof order.items = [];
@@ -1153,6 +1382,7 @@ export default function PedidosPage() {
                                   allocation={allocations[item.variant_id] ?? {}}
                                   gestionado={gestionados[item.variant_id] ?? false}
                                   noFisico={noFisicos[item.variant_id] ?? false}
+                                  ubicaciones={ubicaciones}
                                   onAllocationChange={handleAllocationChange}
                                   onToggleGestionado={handleToggleGestionado}
                                   onToggleNoFisico={handleToggleNoFisico}
@@ -1172,6 +1402,60 @@ export default function PedidosPage() {
                   ...(sinProveedor.length > 0 ? [renderGroup("Sin proveedor", sinProveedor, true)] : []),
                 ];
               })()}
+
+              {/* Acción final: modo + procesar al terminar el flujo (antes era
+                  una franja fija abajo que robaba altura de pantalla) */}
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+                padding: "14px 18px", borderRadius: 12, marginBottom: 8,
+                background: "#0E1D2B", border: "1px solid #24445D50",
+              }}>
+                <div
+                  onClick={() => setDryRun(!dryRun)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
+                >
+                  <div style={{
+                    width: 40, height: 22, borderRadius: 99,
+                    background: dryRun ? "#B08343" : "#122F43",
+                    position: "relative", transition: "background 0.2s", flexShrink: 0,
+                    border: `1px solid ${dryRun ? "#8F672E" : "#24445D"}`,
+                  }}>
+                    <div style={{
+                      position: "absolute", top: 3,
+                      left: dryRun ? 20 : 3,
+                      width: 14, height: 14, borderRadius: "50%",
+                      background: "#e8d5b7", transition: "left 0.2s",
+                    }} />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 13, fontWeight: 700, color: "#e8d5b7", margin: 0, fontFamily: "'Philosopher', serif" }}>
+                      {dryRun ? "Modo simulación" : "Modo real"}
+                    </p>
+                    <p style={{ fontSize: 11, color: "#5C84A0", margin: 0 }}>
+                      {dryRun ? "No se guardarán cambios" : "Se guardarán en metadatos y Excel"}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting || isAlistado}
+                  style={{
+                    padding: "10px 28px",
+                    background: submitting || isAlistado ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
+                    color: submitting || isAlistado ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
+                    border: `1px solid ${isAlistado ? "#374151" : dryRun ? "#8F672E" : "#6A481C"}`,
+                    borderRadius: 8,
+                    fontFamily: "'Philosopher', serif",
+                    fontWeight: 700, fontSize: 14,
+                    cursor: submitting || isAlistado ? "not-allowed" : "pointer",
+                    opacity: submitting || isAlistado ? 0.5 : 1,
+                    transition: "all 0.2s", whiteSpace: "nowrap",
+                  }}
+                >
+                  {isAlistado ? "🔒 Pedido alistado" : submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
+                </button>
+              </div>
             </div>
           </div>
         ) : loading ? (
@@ -1341,61 +1625,6 @@ export default function PedidosPage() {
           </div>
         )}
 
-        {/* Footer acción */}
-        {order && (
-          <div style={{
-            flexShrink: 0, padding: "14px 28px",
-            borderTop: "1px solid #24445D50",
-            background: "#0E1D2B",
-            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
-          }}>
-            <div
-              onClick={() => setDryRun(!dryRun)}
-              style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
-            >
-              <div style={{
-                width: 40, height: 22, borderRadius: 99,
-                background: dryRun ? "#B08343" : "#122F43",
-                position: "relative", transition: "background 0.2s", flexShrink: 0,
-                border: `1px solid ${dryRun ? "#8F672E" : "#24445D"}`,
-              }}>
-                <div style={{
-                  position: "absolute", top: 3,
-                  left: dryRun ? 20 : 3,
-                  width: 14, height: 14, borderRadius: "50%",
-                  background: "#e8d5b7", transition: "left 0.2s",
-                }} />
-              </div>
-              <div>
-                <p style={{ fontSize: 13, fontWeight: 700, color: "#e8d5b7", margin: 0, fontFamily: "'Philosopher', serif" }}>
-                  {dryRun ? "Modo simulación" : "Modo real"}
-                </p>
-                <p style={{ fontSize: 11, color: "#5C84A0", margin: 0 }}>
-                  {dryRun ? "No se guardarán cambios" : "Se guardarán en metadatos y Excel"}
-                </p>
-              </div>
-            </div>
-
-            <button
-              onClick={handleSubmit}
-              disabled={submitting || isAlistado}
-              style={{
-                padding: "10px 28px",
-                background: submitting || isAlistado ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
-                color: submitting || isAlistado ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
-                border: `1px solid ${isAlistado ? "#374151" : dryRun ? "#8F672E" : "#6A481C"}`,
-                borderRadius: 8,
-                fontFamily: "'Philosopher', serif",
-                fontWeight: 700, fontSize: 14,
-                cursor: submitting || isAlistado ? "not-allowed" : "pointer",
-                opacity: submitting || isAlistado ? 0.5 : 1,
-                transition: "all 0.2s", whiteSpace: "nowrap",
-              }}
-            >
-              {isAlistado ? "🔒 Pedido alistado" : submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
-            </button>
-          </div>
-        )}
       </main>
     </div>
   );

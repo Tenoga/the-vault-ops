@@ -103,6 +103,7 @@ export default function InventarioPage() {
   const [filtroProv, setFiltroProv] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [cancelSolicitado, setCancelSolicitado] = useState(false);
+  const [reintentando, setReintentando] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -226,6 +227,26 @@ export default function InventarioPage() {
       else setCancelSolicitado(false); // falló: permitir reintentar
     } catch {
       setCancelSolicitado(false);
+    }
+  }
+
+  async function reintentarFallidas() {
+    if (!job || reintentando) return;
+    setReintentando(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/inventario/jobs/${job.job_id}/reintentar`, { method: "POST" });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail ?? data.error ?? `HTTP ${r.status}`);
+      // El backend devuelve el job nuevo: se sigue igual que un cargue normal
+      setResultado(null);
+      setCancelSolicitado(false);
+      setJob(data);
+      cargarHistorial();
+    } catch (e: any) {
+      setError(e.message ?? "Error creando el reintento");
+    } finally {
+      setReintentando(false);
     }
   }
 
@@ -656,7 +677,23 @@ export default function InventarioPage() {
               {/* Fallidas con razón */}
               {!!resumen?.detalle_fallidas?.length && (
                 <div style={{ marginBottom: 18 }}>
-                  <h3 style={tituloSeccion}>Cartas fallidas</h3>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                    <h3 style={{ ...tituloSeccion, margin: 0 }}>Cartas fallidas</h3>
+                    <button
+                      onClick={reintentarFallidas}
+                      disabled={reintentando}
+                      title="Vuelve a cargar solo las cartas fallidas como un cargue nuevo"
+                      style={{
+                        ...botonSecundario, padding: "5px 14px", fontSize: 12,
+                        opacity: reintentando ? 0.6 : 1,
+                        cursor: reintentando ? "wait" : "pointer",
+                      }}
+                    >
+                      {reintentando
+                        ? "Creando reintento…"
+                        : `🔁 Reintentar todas (${resumen.detalle_fallidas.length})`}
+                    </button>
+                  </div>
                   <div style={{ border: "1px solid #7f1d1d60", borderRadius: 10, overflow: "hidden", background: "#0E151D" }}>
                     <ScrollArea className="h-[220px]">
                       {resumen.detalle_fallidas.map((r, i) => (

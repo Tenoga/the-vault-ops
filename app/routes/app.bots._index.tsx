@@ -23,6 +23,15 @@ const bots = [
     disponible: true,
   },
   {
+    nombre: "Depurador de Inventario",
+    emoji: "🃏",
+    descripcion:
+      "Sube el CSV de ManaBox y detecta las copias baratas repetidas que sobran (≤$0.90, máx. 4 por carta, inglés y foil primero). Reporte visual con fotos para decidir qué sacar y exportar el inventario limpio.",
+    to: "/app/bots/depurador",
+    accent: "#6A481C",
+    disponible: true,
+  },
+  {
     nombre: "Bots Pirata",
     emoji: "🏴‍☠️",
     descripcion:

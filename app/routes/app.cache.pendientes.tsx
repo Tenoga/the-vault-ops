@@ -6,6 +6,7 @@ type Pendiente = {
   titulo: string;
   comentario?: string;
   origen?: string | null;
+  origenes?: string[];
   urls_intentadas: string[];
   ultima_vez_usado?: string;
 };
@@ -24,6 +25,15 @@ const SIN_ORIGEN = { nombre: "Sin origen", emoji: "❔", accent: "#5C84A0" };
 
 function metaOrigen(origen?: string | null) {
   return (origen && ORIGEN_META[origen]) || SIN_ORIGEN;
+}
+
+// Todos los bots (conocidos) que toparon esta carta. Una carta puede importar
+// a varios (The Vault + una tienda pirata). Fallback al `origen` legacy.
+function origenesDe(p: Pendiente): string[] {
+  const arr = Array.isArray(p.origenes) ? p.origenes : [];
+  const conocidos = arr.filter((o) => ORIGEN_META[o]);
+  if (conocidos.length) return conocidos;
+  return p.origen && ORIGEN_META[p.origen] ? [p.origen] : [];
 }
 
 // Imagen desde el CDN de Scryfall (patrón estable /normal/front/a/b/uuid.jpg).
@@ -69,17 +79,24 @@ export default function PendientesCachePage() {
     setItems((arr) => arr.filter((x) => keyDe(x) !== k));
   }
 
-  // Conteo por origen (para los chips)
+  // Conteo por origen (para los chips). Una carta con varios origenes suma en
+  // cada uno → los conteos pueden solapar (refleja que la carta importa a
+  // varios bots). "sin" = sin ningún origen conocido.
   const conteos: Record<string, number> = {};
   for (const p of items) {
-    const og = p.origen && ORIGEN_META[p.origen] ? p.origen : "sin";
-    conteos[og] = (conteos[og] || 0) + 1;
+    const ogs = origenesDe(p);
+    if (ogs.length === 0) conteos["sin"] = (conteos["sin"] || 0) + 1;
+    for (const og of ogs) conteos[og] = (conteos[og] || 0) + 1;
   }
 
   const filtrados = items.filter((p) => {
     if (origenSel !== "todos") {
-      const og = p.origen && ORIGEN_META[p.origen] ? p.origen : "sin";
-      if (og !== origenSel) return false;
+      const ogs = origenesDe(p);
+      if (origenSel === "sin") {
+        if (ogs.length) return false;
+      } else if (!ogs.includes(origenSel)) {
+        return false;
+      }
     }
     if (filtro && !(p.titulo || "").toLowerCase().includes(filtro.toLowerCase())) return false;
     return true;
@@ -234,17 +251,18 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
 
 // Popup de detalle: imagen grande a la izquierda; a la derecha toda la info
 // con las URLs intentadas en texto amplio y clicable, y el registro ahí mismo.
-function DetallePendiente({ p, img, imgOk, meta, url, setUrl, guardando, onRegistrar, onClose }: {
+function DetallePendiente({ p, img, imgOk, metas, url, setUrl, guardando, onRegistrar, onClose }: {
   p: Pendiente;
   img: string;
   imgOk: boolean;
-  meta: { nombre: string; emoji: string; accent: string };
+  metas: { nombre: string; emoji: string; accent: string }[];
   url: string;
   setUrl: (v: string) => void;
   guardando: boolean;
   onRegistrar: () => void;
   onClose: () => void;
 }) {
+  const meta = metas[0];
   const [zoom, setZoom] = useState(false);
 
   useEffect(() => {
@@ -300,13 +318,15 @@ function DetallePendiente({ p, img, imgOk, meta, url, setUrl, guardando, onRegis
 
           {/* Badges */}
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingRight: 36 }}>
-            <span style={{
-              fontSize: 12, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
-              background: "#0E151D", border: `1px solid ${meta.accent}`, color: meta.accent,
-              fontFamily: "'Philosopher', serif", whiteSpace: "nowrap",
-            }}>
-              {meta.emoji} {meta.nombre}
-            </span>
+            {metas.map((m, i) => (
+              <span key={i} style={{
+                fontSize: 12, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
+                background: "#0E151D", border: `1px solid ${m.accent}`, color: m.accent,
+                fontFamily: "'Philosopher', serif", whiteSpace: "nowrap",
+              }}>
+                {m.emoji} {m.nombre}
+              </span>
+            ))}
             {p.finishing === "Foil" ? (
               <span style={{
                 fontSize: 12, fontWeight: 900, padding: "3px 14px", borderRadius: 20,
@@ -434,7 +454,9 @@ function PendienteCard({ p, onRegistrada, onError }: {
   const [guardando, setGuardando] = useState(false);
   const [detalle, setDetalle] = useState(false);
   const [imgOk, setImgOk] = useState(true);
-  const meta = metaOrigen(p.origen);
+  const ogs = origenesDe(p);
+  const metas = ogs.length ? ogs.map((o) => ORIGEN_META[o]) : [SIN_ORIGEN];
+  const meta = metas[0];  // primario, para el acento del borde
   const img = imagenDe(p.uuid);
 
   async function registrar() {
@@ -475,7 +497,7 @@ function PendienteCard({ p, onRegistrada, onError }: {
           p={p}
           img={img}
           imgOk={imgOk}
-          meta={meta}
+          metas={metas}
           url={url}
           setUrl={setUrl}
           guardando={guardando}
@@ -500,16 +522,20 @@ function PendienteCard({ p, onRegistrada, onError }: {
           e.currentTarget.style.boxShadow = "none";
         }}
       >
-        {/* origen + fecha */}
+        {/* origen(es) + fecha — una carta puede importar a varios bots */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <span style={{
-            fontSize: 11.5, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
-            background: "#0E151D", border: `1px solid ${meta.accent}`, color: meta.accent,
-            fontFamily: "'Philosopher', serif", letterSpacing: 0.5, whiteSpace: "nowrap",
-          }}>
-            {meta.emoji} {meta.nombre}
-          </span>
-          {fecha && <span style={{ fontSize: 11, color: "#44546A" }}>{fecha}</span>}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {metas.map((m, i) => (
+              <span key={i} style={{
+                fontSize: 11.5, fontWeight: 800, padding: "3px 12px", borderRadius: 20,
+                background: "#0E151D", border: `1px solid ${m.accent}`, color: m.accent,
+                fontFamily: "'Philosopher', serif", letterSpacing: 0.5, whiteSpace: "nowrap",
+              }}>
+                {m.emoji} {m.nombre}
+              </span>
+            ))}
+          </div>
+          {fecha && <span style={{ fontSize: 11, color: "#44546A", flexShrink: 0 }}>{fecha}</span>}
         </div>
 
         {/* imagen (click → abre el detalle, como toda la tarjeta) */}

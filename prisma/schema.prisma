@@ -32,3 +32,21 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+// Mapa de cajas físicas: dónde está archivada cada carta según
+// (proveedor × color × CMC × rango de letras). Parametrizable desde el portal
+// porque la organización física cambia. Una fila = una caja.
+model Ubicacion {
+  id         String   @id @default(cuid())
+  proveedor  String
+  color      String   // clave de color: W U B R G C MULTI NONE
+  cmc        Int
+  cmcOrMas   Boolean  @default(false) // true = "coste N o superiores"
+  letraDesde String   // "A".."Z"
+  letraHasta String   // "A".."Z"
+  nombre     String   // nombre físico que se muestra (ej. "Caja 12")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([proveedor, color, cmc])
+}

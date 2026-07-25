@@ -4,6 +4,7 @@ const navLinks = [
   { to: "/app/bots", label: "Inicio", end: true },
   { to: "/app/bots/inventario", label: "Cargue de Inventario" },
   { to: "/app/bots/precios", label: "Actualizador de Precios" },
+  { to: "/app/bots/depurador", label: "Depurador de Inventario" },
   { to: "/app/bots/piratas", label: "Bots Pirata" },
 ];
 
