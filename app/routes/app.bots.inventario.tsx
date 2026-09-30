@@ -53,6 +53,32 @@ interface Validacion {
   error?: string;
 }
 
+// Job del depurador (validación contra la tienda antes de cargar)
+interface DepResumen {
+  total_copias: number;
+  total_retirar: number;
+  valor_retirar: number;
+  cartas_afectadas: number;
+  contra_tienda?: boolean;
+  cartas_en_tienda?: number;
+}
+interface DepJob {
+  job_id: string;
+  archivo: string;
+  umbral?: number;
+  conservar?: number;
+  estado: "en_cola" | "ejecutando" | "completado" | "error" | "cancelado" | "interrumpido";
+  fase?: string | null;
+  error: string | null;
+  resumen?: DepResumen | null;
+}
+
+const DEP_TERMINADO = ["completado", "error", "cancelado", "interrumpido"];
+const DEP_FASES: Record<string, string> = {
+  escaneando_tienda: "Escaneando el inventario de la tienda (~1 min)…",
+  depurando: "Comparando y generando el reporte…",
+};
+
 // ─── Helpers de presentación ──────────────────────────────────────────────────
 
 const FASES: Record<string, string> = {
@@ -105,8 +131,14 @@ export default function InventarioPage() {
   const [cancelSolicitado, setCancelSolicitado] = useState(false);
   const [reintentando, setReintentando] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [depurarPrimero, setDepurarPrimero] = useState(false);
+  const [depUmbral, setDepUmbral] = useState("0.90");
+  const [depConservar, setDepConservar] = useState("4");
+  const [depJob, setDepJob] = useState<DepJob | null>(null);
+  const [confirmando, setConfirmando] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const depIframeRef = useRef<HTMLIFrameElement>(null);
 
   const cargarHistorial = useCallback(async () => {
     try {
@@ -173,6 +205,27 @@ export default function InventarioPage() {
     return () => clearInterval(timer);
   }, [job?.job_id, job?.estado, cargarHistorial]);
 
+  // Polling del job del depurador (fase previa vs tienda) hasta que termine
+  useEffect(() => {
+    if (!depJob || DEP_TERMINADO.includes(depJob.estado)) return;
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/depurador/jobs/${depJob.job_id}`);
+        if (!r.ok) return;
+        const j: DepJob = await r.json();
+        if (DEP_TERMINADO.includes(j.estado)) {
+          const rr = await fetch(`/api/depurador/jobs/${j.job_id}?result=1`);
+          setDepJob(rr.ok ? await rr.json() : j);
+        } else {
+          setDepJob(j);
+        }
+      } catch {
+        /* reintenta en el siguiente tick */
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [depJob?.job_id, depJob?.estado]);
+
   function seleccionarArchivo(f: File) {
     setFile(f);
     setValidacion(null);
@@ -197,8 +250,61 @@ export default function InventarioPage() {
     }
   }
 
+  // Depurar contra la tienda antes de cargar: crea un job del depurador
+  // (contra_tienda) y muestra su reporte para revisar/ajustar y confirmar.
+  async function iniciarDepuracion() {
+    if (!file || !proveedor.trim()) return;
+    setSubiendo(true);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("contra_tienda", "true");
+      fd.append("umbral", depUmbral.trim() || "0.90");
+      fd.append("conservar", depConservar.trim() || "4");
+      const r = await fetch("/api/depurador/upload", { method: "POST", body: fd });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? data.detail ?? `HTTP ${r.status}`);
+      setDepJob(data);
+    } catch (e: any) {
+      setError(e.message ?? "Error iniciando la depuración");
+    } finally {
+      setSubiendo(false);
+    }
+  }
+
+  // Toma el CSV ya filtrado del reporte (mismo-origen) y lo carga como siempre
+  async function confirmarYCargar() {
+    if (!depJob || confirmando) return;
+    setConfirmando(true);
+    setError(null);
+    try {
+      const win = depIframeRef.current?.contentWindow as any;
+      if (!win || typeof win.csvSugerido !== "function") {
+        throw new Error("No se pudo leer el reporte; recárgalo e intenta de nuevo.");
+      }
+      const { csv } = win.csvSugerido();
+      const filtrado = new File([csv], file?.name ?? "inventario.csv", { type: "text/csv" });
+      const fd = new FormData();
+      fd.append("file", filtrado);
+      fd.append("proveedor", proveedor.trim());
+      const r = await fetch("/api/inventario/upload", { method: "POST", body: fd });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? data.detail ?? `HTTP ${r.status}`);
+      setDepJob(null);
+      setResultado(null);
+      setJob(data);        // entra al flujo normal de cargue
+      cargarHistorial();
+    } catch (e: any) {
+      setError(e.message ?? "Error cargando el CSV filtrado");
+    } finally {
+      setConfirmando(false);
+    }
+  }
+
   async function iniciarCargue() {
     if (!file || !proveedor.trim()) return;
+    if (depurarPrimero) return iniciarDepuracion();
     setSubiendo(true);
     setError(null);
     try {
@@ -272,6 +378,12 @@ export default function InventarioPage() {
     setValidacion(null);
     setError(null);
     setCancelSolicitado(false);
+    setDepJob(null);
+  }
+
+  function cancelarDepuracion() {
+    setDepJob(null);
+    setError(null);
   }
 
   const puedeIniciar = !!file && validacion?.valido === true && !!proveedor.trim() && !subiendo;
@@ -306,7 +418,7 @@ export default function InventarioPage() {
             CSV del proveedor → Scryfall → Shopify, con seguimiento en vivo
           </p>
         </div>
-        {job && (
+        {(job || depJob) && (
           <button onClick={nuevoCargue} style={botonSecundario}>
             ＋ Nuevo cargue
           </button>
@@ -323,8 +435,8 @@ export default function InventarioPage() {
         </div>
       )}
 
-      {/* ── Panel de subida (cuando no hay job activo) ── */}
-      {!job && (
+      {/* ── Panel de subida (cuando no hay job ni depuración activa) ── */}
+      {!job && !depJob && (
         <div style={panel}>
           {/* Drop zone */}
           <div
@@ -416,9 +528,48 @@ export default function InventarioPage() {
               opacity: puedeIniciar ? 1 : 0.5,
               cursor: puedeIniciar ? "pointer" : "not-allowed",
             }}>
-              {subiendo ? "Subiendo…" : "⚡ Iniciar cargue"}
+              {subiendo ? "Subiendo…" : (depurarPrimero ? "🧹 Depurar y cargar" : "⚡ Iniciar cargue")}
             </button>
           </div>
+
+          {/* Check: depurar contra la tienda antes de cargar */}
+          <label style={{
+            display: "flex", alignItems: "flex-start", gap: 10, marginTop: 14,
+            padding: "12px 14px", borderRadius: 8, cursor: "pointer",
+            background: depurarPrimero ? "#442E1730" : "#0E151D",
+            border: `1px solid ${depurarPrimero ? "#8F672E" : "#24445D40"}`,
+          }}>
+            <input
+              type="checkbox"
+              checked={depurarPrimero}
+              onChange={(e) => setDepurarPrimero(e.target.checked)}
+              style={{ marginTop: 2, width: 16, height: 16, accentColor: "#8F672E", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 13, lineHeight: 1.5 }}>
+              <b style={{ color: "#e8d5b7" }}>Depurar contra el inventario de la tienda antes de cargar</b>
+              <span style={{ display: "block", color: "#8F672E", fontSize: 12, marginTop: 2 }}>
+                Compara este CSV con lo que ya hay en la tienda y sugiere retirar las copias
+                sobrantes para no acumular repetidas. Abre el reporte para revisar y confirmar.
+                Agrega ~1 min por el escaneo de la tienda.
+              </span>
+            </span>
+          </label>
+
+          {/* Parámetros del cupo (se deciden ANTES de generar el reporte) */}
+          {depurarPrimero && (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12, paddingLeft: 4 }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5, color: "#8F672E", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Conservar por carta (total)
+                <input type="number" step="1" min="1" value={depConservar} onChange={(e) => setDepConservar(e.target.value)}
+                  style={{ width: 110, padding: "9px 12px", background: "#0E151D", border: "1px solid #24445D", borderRadius: 8, color: "#e8d5b7", fontSize: 14, fontFamily: "'Literata', Georgia, serif", outline: "none" }} />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5, color: "#8F672E", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Umbral USD (≤ se depura)
+                <input type="number" step="0.01" min="0" value={depUmbral} onChange={(e) => setDepUmbral(e.target.value)}
+                  style={{ width: 110, padding: "9px 12px", background: "#0E151D", border: "1px solid #24445D", borderRadius: 8, color: "#e8d5b7", fontSize: 14, fontFamily: "'Literata', Georgia, serif", outline: "none" }} />
+              </label>
+            </div>
+          )}
 
           {/* Proveedores existentes (Shopify): desplegable con buscador */}
           <div ref={dropdownRef} style={{ position: "relative", marginTop: 12, maxWidth: 360 }}>
@@ -544,6 +695,92 @@ export default function InventarioPage() {
             }}>
               ✗ CSV inválido: {validacion.error}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Panel de depuración vs tienda (revisar antes de cargar) ── */}
+      {depJob && (
+        <div style={panel}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+            <div>
+              <span style={{ fontFamily: "monospace", fontSize: 13, color: "#b8a07a" }}>{depJob.archivo}</span>
+              <span style={{ fontSize: 12, color: "#8F672E", marginLeft: 10 }}>
+                proveedor: {proveedor}
+                {depJob.conservar != null && ` · cupo ${depJob.conservar} por carta (vs tienda)`}
+              </span>
+            </div>
+            <span style={{
+              fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1,
+              padding: "3px 12px", borderRadius: 20,
+              background: ESTADO_COLOR[depJob.estado]?.bg ?? "#122F4380",
+              border: `1px solid ${ESTADO_COLOR[depJob.estado]?.border ?? "#24445D"}`,
+              color: ESTADO_COLOR[depJob.estado]?.text ?? "#93c5fd",
+            }}>
+              depurando · {depJob.estado.replace("_", " ")}
+            </span>
+          </div>
+
+          {/* En curso */}
+          {(depJob.estado === "ejecutando" || depJob.estado === "en_cola") && (
+            <>
+              <style>{`@keyframes tv-sweep { 0% { left: -35%; } 100% { left: 105%; } } @keyframes tv-pulse { 0%,100%{opacity:1} 50%{opacity:.3} }`}</style>
+              <div style={{ display: "flex", alignItems: "center", fontSize: 13, marginBottom: 8, color: "#e8d5b7" }}>
+                <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#8F672E", marginRight: 8, animation: "tv-pulse 1.2s ease-in-out infinite" }} />
+                {depJob.estado === "en_cola" ? "En cola — esperando turno…" : (DEP_FASES[depJob.fase ?? ""] ?? "Procesando…")}
+              </div>
+              <div style={{ position: "relative", width: "100%", height: 8, background: "#0E151D", borderRadius: 99, overflow: "hidden", border: "1px solid #24445D40" }}>
+                <div style={{ position: "absolute", top: 0, bottom: 0, width: "32%", background: "linear-gradient(90deg, transparent, #8F672E, transparent)", animation: "tv-sweep 1.4s ease-in-out infinite" }} />
+              </div>
+            </>
+          )}
+
+          {/* Error / interrumpido */}
+          {(depJob.estado === "error" || depJob.estado === "interrumpido") && (
+            <div style={{ padding: "12px 16px", borderRadius: 8, background: "#2a0e0e", border: "1px solid #7f1d1d", color: "#fca5a5", fontSize: 13, whiteSpace: "pre-wrap" }}>
+              ⚠️ La depuración terminó con error: {depJob.error ?? depJob.estado}
+            </div>
+          )}
+
+          {/* Completado: reporte + confirmar */}
+          {depJob.estado === "completado" && depJob.resumen && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 16 }}>
+                {[
+                  { label: "Sugerido retirar", value: `${depJob.resumen.total_retirar} copias`, accent: "#8F672E" },
+                  { label: "Del CSV", value: `${depJob.resumen.total_copias} copias`, accent: "#24445D" },
+                  { label: "Ya en tienda", value: `${depJob.resumen.cartas_en_tienda ?? 0} cartas`, accent: "#6A481C" },
+                  { label: "Cartas afectadas", value: depJob.resumen.cartas_afectadas, accent: "#442E17" },
+                ].map((kpi) => (
+                  <div key={kpi.label} style={{ background: "#0E151D", border: `1px solid ${kpi.accent}40`, borderTop: `3px solid ${kpi.accent}`, borderRadius: 10, padding: "14px 14px" }}>
+                    <p style={{ fontSize: 10, fontWeight: 700, color: "#8F672E", textTransform: "uppercase", letterSpacing: 1, margin: 0 }}>{kpi.label}</p>
+                    <p style={{ fontSize: 22, fontWeight: 800, color: "#e8d5b7", margin: "4px 0 0", fontFamily: "'Philosopher', serif" }}>{kpi.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+                <span style={{ fontSize: 12, color: "#8F672E" }}>
+                  Revisa y ajusta en el reporte (cantidades por carta). Al confirmar se carga el CSV ya filtrado.
+                </span>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={cancelarDepuracion} style={botonSecundario}>Cancelar</button>
+                  <button onClick={confirmarYCargar} disabled={confirmando} style={{ ...botonPrimario, opacity: confirmando ? 0.6 : 1, cursor: confirmando ? "wait" : "pointer" }}>
+                    {confirmando ? "Cargando…" : "✓ Confirmar y cargar a la tienda"}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ border: "1px solid #24445D40", borderRadius: 10, overflow: "hidden", background: "#0E151D" }}>
+                <iframe
+                  ref={depIframeRef}
+                  key={depJob.job_id}
+                  src={`/api/depurador/jobs/${depJob.job_id}/reporte`}
+                  title="Reporte de depuración vs tienda"
+                  style={{ width: "100%", height: "78vh", border: "none", display: "block", background: "#0E1D2B" }}
+                />
+              </div>
+            </>
           )}
         </div>
       )}

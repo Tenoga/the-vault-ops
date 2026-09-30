@@ -22,6 +22,8 @@ export const COLOR_OPCIONES: { key: string; label: string; dot: string }[] = [
   { key: "R", label: "Rojo", dot: "#D9534F" },
   { key: "G", label: "Verde", dot: "#5CB85C" },
   { key: "C", label: "Incoloro", dot: "#B8B8B8" },
+  { key: "LAND_BASIC", label: "Tierras básicas", dot: "#D8BE86" },
+  { key: "LAND_NB", label: "Tierras no básicas", dot: "#A97C4A" },
   { key: "MULTI", label: "Multicolor", dot: "#E0A526" },
   { key: "NONE", label: "Sin color", dot: "#5C84A0" },
 ];
@@ -39,8 +41,31 @@ export function contextoLabel(u: {
   cmc: number;
   cmcOrMas: boolean;
 }): string {
-  const coste = u.cmcOrMas ? `coste ${u.cmc}+` : `coste ${u.cmc}`;
-  return `${u.proveedor} · ${COLOR_LABEL[u.color] ?? u.color} · ${coste}`;
+  return `${u.proveedor} · ${COLOR_LABEL[u.color] ?? u.color} · ${costeTexto(u.cmc, u.cmcOrMas)}`;
+}
+
+// Texto del coste para etiquetas: "coste 2", "coste 8+" o "cualquier coste"
+// (cuando es coste 0 con "y superiores", que equivale a todos los costes → sirve
+// para proveedores organizados solo por color).
+export function costeTexto(cmc: number, cmcOrMas: boolean): string {
+  if (cmcOrMas) return cmc === 0 ? "cualquier coste" : `coste ${cmc}+`;
+  return `coste ${cmc}`;
+}
+
+// Etiqueta completa de una caja — lo que estaría escrito en la etiqueta física.
+// Se genera a partir de los datos estructurados, así que NO hay que teclearla:
+// solo se guarda el número de caja (campo `nombre`).
+export function cajaEtiqueta(u: {
+  proveedor: string;
+  color: string;
+  cmc: number;
+  cmcOrMas: boolean;
+  letraDesde: string;
+  letraHasta: string;
+}): string {
+  const d = (u.letraDesde || "").toUpperCase();
+  const h = (u.letraHasta || "").toUpperCase();
+  return `${contextoLabel(u)} · ${d}–${h}`;
 }
 
 // Devuelve la caja que corresponde a una carta, o null si no hay ninguna

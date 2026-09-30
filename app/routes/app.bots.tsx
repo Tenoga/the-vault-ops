@@ -6,6 +6,7 @@ const navLinks = [
   { to: "/app/bots/precios", label: "Actualizador de Precios" },
   { to: "/app/bots/depurador", label: "Depurador de Inventario" },
   { to: "/app/bots/piratas", label: "Bots Pirata" },
+  { to: "/app/bots/tirillas", label: "Tirillas de Envío" },
 ];
 
 export default function BotsLayout() {

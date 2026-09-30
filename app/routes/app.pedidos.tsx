@@ -19,6 +19,7 @@ interface OrderItem {
   title: string;
   image_url: string;
   finishing: string;
+  product_type?: string | null;
   quantity: number;
   sku: string;
   providers: string[];
@@ -27,7 +28,12 @@ interface OrderItem {
   gestionado: boolean;
   no_fisico: boolean;
   color_exacto?: string | null;
+  mana_cost?: string | null;
   cmc?: number;
+  // Nombre impreso en el idioma de la variante (p. ej. el título en español).
+  // Opcional: hoy el backend no lo envía; si algún día llega, se muestra entre
+  // paréntesis junto al nombre en inglés.
+  printed_name?: string | null;
 }
 
 interface OrderAddress {
@@ -71,6 +77,7 @@ interface PendingOrder {
   total: number;
   currency: string;
   customer_name: string | null;
+  is_pickup?: boolean | null;
 }
 
 type ItemAllocation = Record<string, number>;
@@ -99,6 +106,18 @@ function formatDate(iso: string) {
 
 function isSinProveedor(providers: string[]) {
   return providers.length === 1 && providers[0] === "Sin proveedor";
+}
+
+// The Vault siempre se prioriza: si está entre los proveedores de un ítem con
+// varios, se devuelve su nombre exacto (tolera "The Vault" / "TheVault"). Se usa
+// para pre-seleccionarlo por defecto y agrupar el ítem con los demás de The Vault
+// (en su color/coste), en vez de mandarlo al grupo "Múltiples proveedores".
+function proveedorTheVault(providers: string[]): string | null {
+  return (
+    providers.find(
+      (p) => p.trim().toLowerCase().replace(/\s+/g, "") === "thevault",
+    ) ?? null
+  );
 }
 
 function totalAllocated(alloc: ItemAllocation) {
@@ -161,13 +180,27 @@ const COLOR_META: Record<
   R: { label: "Rojo", dot: "#D9534F", order: 3 },
   G: { label: "Verde", dot: "#5CB85C", order: 4 },
   C: { label: "Incoloro", dot: "#B8B8B8", order: 5 },
-  MULTI: { label: "Multicolor", dot: "#E0A526", order: 6 },
-  NONE: { label: "Sin color", dot: "#5C84A0", order: 7 },
+  LAND_BASIC: { label: "Tierras básicas", dot: "#D8BE86", order: 6 },
+  LAND_NB: { label: "Tierras no básicas", dot: "#A97C4A", order: 7 },
+  MULTI: { label: "Multicolor", dot: "#E0A526", order: 8 },
+  NONE: { label: "Sin color", dot: "#5C84A0", order: 9 },
+};
+
+// Algunos productos guardan color_exacto como palabra en español (p. ej.
+// "Incoloro") en vez de códigos WUBRGC; esas palabras romperían el parseo por
+// letras (p. ej. "INCOLORO" caería en Rojo), así que se mapean explícitamente.
+const COLOR_PALABRA: Record<string, string> = {
+  BLANCO: "W", AZUL: "U", NEGRO: "B", ROJO: "R", VERDE: "G",
+  INCOLORO: "C", COLORLESS: "C", MULTICOLOR: "MULTI",
+  "SIN COLOR": "NONE", TIERRA: "LAND", TIERRAS: "LAND",
 };
 
 function colorGroupKey(colorExacto?: string | null): string {
-  const clean = (colorExacto ?? "").toUpperCase().replace(/[^WUBRGC]/g, "");
+  const raw = (colorExacto ?? "").trim().toUpperCase();
+  if (!raw) return "NONE";
+  if (COLOR_PALABRA[raw]) return COLOR_PALABRA[raw];
 
+  const clean = raw.replace(/[^WUBRGC]/g, "");
   if (!clean) return "NONE";
 
   const letras = Array.from(new Set(clean.split("")));
@@ -180,20 +213,76 @@ function colorGroupKey(colorExacto?: string | null): string {
   return "NONE";
 }
 
+// Las tierras se archivan en su propia categoría (no por color): básicas y no
+// básicas van en cajas distintas. Se distinguen por el productType: "Basic Land"
+// (incl. "Basic Snow Land") → básicas; cualquier otro que contenga "land"
+// (Land, Artifact Land, Legendary Land…) → no básicas.
+//
+// SOLO la cara FRONTAL: en las dobles cara "algo // Land" (p. ej. "Sorcery //
+// Land", "Creature // Land") el reverso es tierra pero la carta se archiva por su
+// frente. Se toma la parte anterior al "//"; así un hechizo/criatura con reverso
+// de tierra NO cuenta como tierra, pero una "Land // Land" (pathway) sí.
+function tipoTierra(productType?: string | null): "LAND_BASIC" | "LAND_NB" | null {
+  const frente = (productType ?? "").split("//")[0].toLowerCase();
+  if (!frente.includes("land")) return null;
+  return frente.includes("basic") ? "LAND_BASIC" : "LAND_NB";
+}
+
+// Color REAL de la carta = los símbolos de color del COSTO de maná (esquina
+// superior derecha). Ignora la identidad de color y el texto de reglas. Cubre
+// híbridos ({W/U} cuenta como ambos) y Phyrexian ({B/P} cuenta como negro). Una
+// carta devoid/incolora cuyo costo lleva maná de color cuenta como ese color.
+function coloresDelCosto(manaCost?: string | null): string[] {
+  const mc = (manaCost ?? "").toUpperCase();
+  return ["W", "U", "B", "R", "G"].filter((c) => mc.includes(c));
+}
+
+// Clave de color para agrupar y ubicar una carta:
+//   1) tierras → "LAND"
+//   2) por el costo de maná (fuente real del color)
+//   3) si no hay costo de maná disponible → respaldo a color_exacto (datos viejos)
+function itemColorKey(item: {
+  product_type?: string | null;
+  color_exacto?: string | null;
+  mana_cost?: string | null;
+}): string {
+  const tierra = tipoTierra(item.product_type);
+  if (tierra) return tierra;
+
+  const mc = item.mana_cost;
+  if (mc != null && mc !== "") {
+    const cols = coloresDelCosto(mc);
+    if (cols.length > 1) return "MULTI";
+    if (cols.length === 1) return cols[0];
+    return "C"; // costo sin símbolos de color = incolora
+  }
+
+  return colorGroupKey(item.color_exacto);
+}
+
+// CMC (coste convertido) para ubicar la carta, contando cada {X} como 1 (no como
+// 0 como hace Scryfall). Así {X}{G}{U} cuenta 3 y no 2, y cae en la caja correcta.
+function itemCmc(item: { cmc?: number; mana_cost?: string | null }): number {
+  const base = item.cmc ?? 999;
+  if (base === 999) return 999; // desconocido: se deja tal cual
+  const equis = ((item.mana_cost ?? "").toUpperCase().match(/X/g) ?? []).length;
+  return base + equis;
+}
+
 // Devuelve [clave_color, items][] ordenado WUBRG; dentro de cada color, por
 // coste de maná (cmc) y luego por nombre.
 function groupByColor(items: OrderItem[]): [string, OrderItem[]][] {
   const groups: Record<string, OrderItem[]> = {};
 
   for (const item of items) {
-    const key = colorGroupKey(item.color_exacto);
+    const key = itemColorKey(item);
     (groups[key] ??= []).push(item);
   }
 
   for (const key of Object.keys(groups)) {
     groups[key].sort(
       (a, b) =>
-        (a.cmc ?? 999) - (b.cmc ?? 999) ||
+        itemCmc(a) - itemCmc(b) ||
         a.title.localeCompare(b.title, "es"),
     );
   }
@@ -406,12 +495,17 @@ function OrderItemCard({
   const { providers, quantity } = item;
   const letra = initialLetter(item.title);
   const idioma = parseIdioma(item.sku);
+  // Idioma distinto del inglés (el idioma por defecto del catálogo): se resalta
+  // para que quien alista lo note de inmediato. Si además tenemos el nombre
+  // impreso en ese idioma, se muestra entre paréntesis junto al título.
+  const esNoIngles = !!idioma && idioma.code !== "EN";
+  const nombreLocal = esNoIngles ? item.printed_name?.trim() || null : null;
 
   // Caja física: depende del proveedor que se vaya a alistar. Se usan los
   // proveedores con cantidad asignada; si aún no se asigna nada pero solo hay
   // uno, se usa ese. La búsqueda es por (proveedor, color, CMC, letra inicial).
-  const color = colorGroupKey(item.color_exacto);
-  const cmc = item.cmc ?? 999;
+  const color = itemColorKey(item);
+  const cmc = itemCmc(item);
   const provsAsignados = isSinProveedor(providers)
     ? []
     : Object.entries(allocation).filter(([, q]) => q > 0).map(([p]) => p);
@@ -425,6 +519,11 @@ function OrderItemCard({
     prov,
     caja: findCaja(ubicaciones, { proveedor: prov, color, cmc, letra }),
   }));
+  // Si resolvemos exactamente UNA caja, su número es el protagonista del panel.
+  // En cualquier otro caso (varios proveedores, sin proveedor asignado o caja
+  // sin configurar) se mantiene la letra inicial como respaldo.
+  const heroCaja = cajas.length === 1 ? cajas[0].caja : null;
+  const colorMeta = COLOR_META[color] ?? COLOR_META.NONE;
 
   const proveedorCompleto = isSinProveedor(providers)
     ? true
@@ -439,8 +538,12 @@ function OrderItemCard({
   return (
     <>
       {lightbox && <Lightbox src={item.image_url} alt={item.title} onClose={() => setLightbox(false)} />}
-      <div style={{
+      <div
+        onClick={() => onToggleGestionado(item.variant_id)}
+        title={gestionado ? "Clic para quitar «gestionado»" : "Clic en la tarjeta para marcar «gestionado»"}
+        style={{
         display: "flex", gap: 14, padding: 16, borderRadius: 12,
+        cursor: "pointer",
         border: completo
           ? "2px solid #8F672E"
           : item.finishing === "Foil" && esMultiple
@@ -473,7 +576,7 @@ function OrderItemCard({
       {/* Imagen */}
       <div style={{ flexShrink: 0, alignSelf: "stretch" }}>
         <div
-          onClick={() => setLightbox(true)}
+          onClick={(e) => { e.stopPropagation(); setLightbox(true); }}
           style={{
             width: 210, height: "100%", borderRadius: 10, overflow: "hidden",
             border: "1px solid #24445D", background: "#0E151D",
@@ -504,10 +607,15 @@ function OrderItemCard({
             textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
             {item.title}
+            {nombreLocal && (
+              <span style={{ color: "#5C84A0", fontWeight: 400, fontStyle: "italic" }}>
+                {" "}({nombreLocal})
+              </span>
+            )}
           </h3>
           <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
             <button
-              onClick={() => onToggleNoFisico(item.variant_id)}
+              onClick={(e) => { e.stopPropagation(); onToggleNoFisico(item.variant_id); }}
               style={{
                 fontSize: 12, fontWeight: 700, cursor: "pointer",
                 color: noFisico ? "#fff" : "#5C84A0",
@@ -522,7 +630,7 @@ function OrderItemCard({
               {noFisico ? "👻 No físico" : "¿No físico?"}
             </button>
             <button
-              onClick={() => onToggleGestionado(item.variant_id)}
+              onClick={(e) => { e.stopPropagation(); onToggleGestionado(item.variant_id); }}
               style={{
                 fontSize: 12, fontWeight: 700, cursor: "pointer",
                 color: gestionado ? "#B08343" : "#5C84A0",
@@ -583,6 +691,20 @@ function OrderItemCard({
               ×{item.quantity}
             </span>
           )}
+          {esNoIngles && (
+            <span style={{
+              fontSize: 14, fontWeight: 900, padding: "4px 14px", borderRadius: 20,
+              background: "linear-gradient(90deg, #06B6D4, #22D3EE, #06B6D4)",
+              color: "#04222b",
+              border: "2px solid #22D3EE",
+              fontFamily: "'Philosopher', serif",
+              boxShadow: "0 0 16px #22D3EE, 0 0 30px #22D3EE70",
+              letterSpacing: 1.5,
+              textShadow: "0 0 6px #ffffff80",
+            }}>
+              🌐 {idioma!.label.toUpperCase()}
+            </span>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px", marginTop: 10 }}>
@@ -597,11 +719,13 @@ function OrderItemCard({
           </span>
         </div>
 
-        <ProviderSelector
-          item={item}
-          allocation={allocation}
-          onChange={(alloc) => onAllocationChange(item.variant_id, alloc)}
-        />
+        <div onClick={(e) => e.stopPropagation()}>
+          <ProviderSelector
+            item={item}
+            allocation={allocation}
+            onChange={(alloc) => onAllocationChange(item.variant_id, alloc)}
+          />
+        </div>
       </div>
 
       {/* Ubicación física: dónde y en qué idioma buscar la carta. El inventario
@@ -613,106 +737,208 @@ function OrderItemCard({
         padding: "14px 12px", borderRadius: 10,
         background: "#0E151D", border: "1px solid #24445D50",
       }}>
+        {/* Título adaptativo: si sabemos la caja, la orden es "ir a la caja" */}
         <span style={{
           fontSize: 10, fontWeight: 700, color: "#5C84A0",
           textTransform: "uppercase", letterSpacing: 1.5,
           fontFamily: "'Philosopher', serif", textAlign: "center",
         }}>
-          Dónde buscar
+          {heroCaja ? "Ir a la caja" : "Dónde buscar"}
         </span>
 
-        {/* Letra inicial (tramo alfabético) */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-          <div style={{
-            width: 66, height: 66, borderRadius: 12,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            background: "#1a1206", border: "2px solid #8F672E",
-            boxShadow: "inset 0 0 20px #6A481C20",
-          }}>
-            <span style={{
-              fontFamily: "'Nova Cut', cursive", fontSize: 40, lineHeight: 1,
-              color: "#B08343",
+        {heroCaja ? (
+          <>
+            {/* Número de caja — el identificador físico (protagonista) */}
+            <div style={{ display: "flex", justifyContent: "center" }}>
+              <div style={{
+                minWidth: 92, borderRadius: 14, padding: "8px 12px",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                background: "#1a1206", border: "2px solid #B08343",
+                boxShadow: "0 0 18px #8F672E40, inset 0 0 24px #6A481C20",
+              }}>
+                <span style={{
+                  fontFamily: "'Nova Cut', cursive", fontSize: 46, lineHeight: 1.05,
+                  color: "#B08343", textAlign: "center", wordBreak: "break-word",
+                }}>
+                  {heroCaja.nombre}
+                </span>
+              </div>
+            </div>
+
+            {/* Confirmación: la etiqueta completa de la caja (proveedor · color ·
+                coste · rango), generada sola, para que coincida con la física. */}
+            <div style={{
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+              padding: 8, borderRadius: 8,
+              background: "#0E151D", border: "1px solid #24445D50",
             }}>
-              {letra}
+              <span style={{
+                fontSize: 11, fontWeight: 600, color: "#8F672E",
+                fontFamily: "'Literata', serif", textAlign: "center",
+              }}>
+                {cajas[0].prov}
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{
+                  width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+                  background: colorMeta.dot,
+                  boxShadow: "0 0 0 1px #0E151D, 0 0 0 2px #24445D",
+                }} />
+                <span style={{
+                  fontFamily: "'Philosopher', serif", fontSize: 12, fontWeight: 700,
+                  color: "#e8d5b7", textAlign: "center",
+                }}>
+                  {heroCaja.cmc === 0 && heroCaja.cmcOrMas
+                    ? colorMeta.label
+                    : `${colorMeta.label} · Coste ${heroCaja.cmc}${heroCaja.cmcOrMas ? "+" : ""}`}
+                </span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#B08343", fontFamily: "monospace" }}>
+                {heroCaja.letraDesde}–{heroCaja.letraHasta}
+              </span>
+            </div>
+          </>
+        ) : (
+          /* Respaldo: letra inicial (tramo alfabético) */
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <div style={{
+              width: 66, height: 66, borderRadius: 12,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: "#1a1206", border: "2px solid #8F672E",
+              boxShadow: "inset 0 0 20px #6A481C20",
+            }}>
+              <span style={{
+                fontFamily: "'Nova Cut', cursive", fontSize: 40, lineHeight: 1,
+                color: "#B08343",
+              }}>
+                {letra}
+              </span>
+            </div>
+            <span style={{
+              fontSize: 10, color: "#5C84A0", fontFamily: "'Philosopher', serif",
+              textTransform: "uppercase", letterSpacing: 1,
+            }}>
+              Alfabético
             </span>
           </div>
-          <span style={{
-            fontSize: 10, color: "#5C84A0", fontFamily: "'Philosopher', serif",
-            textTransform: "uppercase", letterSpacing: 1,
-          }}>
-            Alfabético
-          </span>
-        </div>
+        )}
 
-        {/* Idioma de la variante */}
+        {/* Idioma de la variante — resaltado en cian si NO es inglés */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
           padding: "7px 8px", borderRadius: 8,
-          background: idioma ? "#122F43" : "#0E1D2B",
-          border: `1px solid ${idioma ? "#24445D" : "#24445D50"}`,
+          background: esNoIngles ? "#06323b" : idioma ? "#122F43" : "#0E1D2B",
+          border: `1px solid ${esNoIngles ? "#22D3EE" : idioma ? "#24445D" : "#24445D50"}`,
+          boxShadow: esNoIngles ? "0 0 10px #22D3EE40" : "none",
         }}>
           <span style={{ fontSize: 15 }} aria-hidden>🌐</span>
           <span style={{
             fontSize: 13, fontWeight: 700,
-            color: idioma ? "#e8d5b7" : "#5C84A0",
+            color: esNoIngles ? "#a9ecf5" : idioma ? "#e8d5b7" : "#5C84A0",
             fontFamily: "'Philosopher', serif",
           }}>
             {idioma ? idioma.label : "Idioma —"}
           </span>
         </div>
 
-        {/* Caja física — según el proveedor que se vaya a alistar */}
-        {!isSinProveedor(providers) && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{
-              fontSize: 10, fontWeight: 700, color: "#5C84A0",
-              textTransform: "uppercase", letterSpacing: 1.5,
-              fontFamily: "'Philosopher', serif", textAlign: "center",
-            }}>
-              Caja
-            </span>
-
-            {cajas.length === 0 ? (
-              <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
-                Elige proveedor
+        {heroCaja ? (
+          /* En modo caja, la inicial va pequeña: ayuda a ubicar dentro de la caja */
+          <span style={{
+            fontSize: 10, color: "#5C84A0", textAlign: "center",
+            fontFamily: "'Philosopher', serif",
+          }}>
+            Inicial: <b style={{ color: "#8F672E" }}>{letra}</b>
+          </span>
+        ) : (
+          /* Sin caja resuelta: sección de caja (elige proveedor / varios / sin configurar) */
+          !isSinProveedor(providers) && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, color: "#5C84A0",
+                textTransform: "uppercase", letterSpacing: 1.5,
+                fontFamily: "'Philosopher', serif", textAlign: "center",
+              }}>
+                Caja
               </span>
-            ) : (
-              cajas.map(({ prov, caja }) => (
-                <div key={prov} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                  {cajas.length > 1 && (
-                    <span style={{ fontSize: 10, color: "#8F672E", textAlign: "center", fontFamily: "'Literata', serif" }}>
-                      {prov}
-                    </span>
-                  )}
-                  {caja ? (
-                    <div style={{
-                      display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
-                      padding: "8px", borderRadius: 8,
-                      background: "#1a1206", border: "1px solid #8F672E",
-                    }}>
-                      <span style={{
-                        fontFamily: "'Philosopher', serif", fontSize: 14, fontWeight: 700,
-                        color: "#B08343", textAlign: "center", lineHeight: 1.2,
+
+              {cajas.length === 0 ? (
+                <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
+                  Elige proveedor
+                </span>
+              ) : (
+                cajas.map(({ prov, caja }) => (
+                  <div key={prov} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {cajas.length > 1 && (
+                      <span style={{ fontSize: 10, color: "#8F672E", textAlign: "center", fontFamily: "'Literata', serif" }}>
+                        {prov}
+                      </span>
+                    )}
+                    {caja ? (
+                      <div style={{
+                        display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
+                        padding: "8px", borderRadius: 8,
+                        background: "#1a1206", border: "1px solid #8F672E",
                       }}>
-                        {caja.nombre}
+                        <span style={{
+                          fontFamily: "'Philosopher', serif", fontSize: 14, fontWeight: 700,
+                          color: "#B08343", textAlign: "center", lineHeight: 1.2,
+                        }}>
+                          {caja.nombre}
+                        </span>
+                        <span style={{ fontSize: 10, color: "#5C84A0", fontFamily: "monospace" }}>
+                          {caja.letraDesde}–{caja.letraHasta}
+                        </span>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
+                        Sin caja configurada
                       </span>
-                      <span style={{ fontSize: 10, color: "#5C84A0", fontFamily: "monospace" }}>
-                        {caja.letraDesde}–{caja.letraHasta}
-                      </span>
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: 11, color: "#5C84A0", fontStyle: "italic", textAlign: "center" }}>
-                      Sin caja configurada
-                    </span>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )
         )}
       </div>
     </div>
     </>
+  );
+}
+
+// ─── Enlace a la tirilla del pedido ─────────────────────────────────────────
+// Salta a la página del bot de Tirillas con el pedido ya cargado (?order=N).
+function TirillaLink({ orderName, block, isPickup }: {
+  orderName: string;
+  block?: boolean;
+  isPickup?: boolean | null;
+}) {
+  const num = orderName.replace(/^#/, "");
+  const etiqueta =
+    isPickup === true ? "🏷️ Tirilla pickup"
+    : isPickup === false ? "🏷️ Tirilla envío"
+    : "🏷️ Tirilla";
+  return (
+    <Link
+      to={`/app/bots/tirillas?order=${encodeURIComponent(num)}`}
+      onClick={(e) => e.stopPropagation()}
+      title="Generar e imprimir la tirilla de este pedido"
+      style={{
+        display: block ? "flex" : "inline-flex",
+        width: block ? "100%" : undefined,
+        boxSizing: "border-box",
+        alignItems: "center", justifyContent: "center", gap: 6,
+        padding: block ? "8px 10px" : "6px 12px",
+        borderRadius: 8, textDecoration: "none", whiteSpace: "nowrap",
+        background: "#122F43", border: "1px solid #5C84A066", color: "#9BC1D9",
+        fontSize: 12.5, fontWeight: 700, fontFamily: "'Philosopher', serif",
+        transition: "all 0.15s",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "#5C84A0"; e.currentTarget.style.color = "#0E151D"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "#122F43"; e.currentTarget.style.color = "#9BC1D9"; }}
+    >
+      {etiqueta}
+    </Link>
   );
 }
 
@@ -836,7 +1062,9 @@ export default function PedidosPage() {
           if (item.providers.length === 1) {
             initial[item.variant_id] = { [item.providers[0]]: item.quantity };
           } else {
-            initial[item.variant_id] = {};
+            // Multi-proveedor: si The Vault es opción, se pre-asigna a él.
+            const tv = proveedorTheVault(item.providers);
+            initial[item.variant_id] = tv ? { [tv]: item.quantity } : {};
           }
         } else {
           initial[item.variant_id] = { "Sin proveedor": item.quantity };
@@ -1017,6 +1245,51 @@ export default function PedidosPage() {
     sinProveedor: order.items.filter((i) => isSinProveedor(i.providers)).length,
     totalCOP: order.items.reduce((s, i) => s + i.price * i.quantity, 0),
   } : null;
+
+  // Volver a pendientes (reutilizado arriba y abajo).
+  const handleBack = () => {
+    setOrder(null); setError(null); setSuccessMsg(null);
+    // Refrescar pendientes al volver: el refresh post-procesar corre apenas
+    // termina el POST y Shopify puede aún no reflejar el cambio; al regresar ya
+    // pasaron segundos y la foto es la real.
+    fetchPending();
+  };
+
+  // Botones "Atrás" y "Confirmar/Simular" — se renderizan tanto en la cabecera
+  // (arriba) como en la barra de acción (abajo) para usarlos sin scrollear.
+  const backBtn = (
+    <button
+      onClick={handleBack}
+      title="Volver a pendientes"
+      style={{
+        width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+        background: "#122F43", border: "1px solid #24445D",
+        color: "#B08343", fontSize: 18, cursor: "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >←</button>
+  );
+
+  const submitBtn = (
+    <button
+      onClick={handleSubmit}
+      disabled={submitting || isAlistado}
+      style={{
+        padding: "10px 28px",
+        background: submitting || isAlistado ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
+        color: submitting || isAlistado ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
+        border: `1px solid ${isAlistado ? "#374151" : dryRun ? "#8F672E" : "#6A481C"}`,
+        borderRadius: 8,
+        fontFamily: "'Philosopher', serif",
+        fontWeight: 700, fontSize: 14,
+        cursor: submitting || isAlistado ? "not-allowed" : "pointer",
+        opacity: submitting || isAlistado ? 0.5 : 1,
+        transition: "all 0.2s", whiteSpace: "nowrap",
+      }}
+    >
+      {isAlistado ? "🔒 Pedido alistado" : submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
+    </button>
+  );
 
   return (
     <div style={{
@@ -1252,22 +1525,7 @@ export default function PedidosPage() {
               {/* Header del pedido (scrollea con el contenido) */}
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                  <button
-                    onClick={() => {
-                      setOrder(null); setError(null); setSuccessMsg(null);
-                      // Refrescar pendientes al volver: el refresh post-procesar corre
-                      // apenas termina el POST y Shopify puede aún no reflejar el
-                      // cambio; al regresar ya pasaron segundos y la foto es la real.
-                      fetchPending();
-                    }}
-                    title="Volver a pendientes"
-                    style={{
-                      width: 36, height: 36, borderRadius: 8, flexShrink: 0,
-                      background: "#122F43", border: "1px solid #24445D",
-                      color: "#B08343", fontSize: 18, cursor: "pointer",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
-                  >←</button>
+                  {backBtn}
                   <div>
                     <h1 style={{
                       fontFamily: "'Nova Cut', cursive", fontSize: 30,
@@ -1280,19 +1538,23 @@ export default function PedidosPage() {
                     </p>
                   </div>
                 </div>
-                {order.tags.length > 0 && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {order.tags.map((tag) => (
-                      <span key={tag} style={{
-                        fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
-                        background: "#122F43", color: "#5C84A0", border: "1px solid #24445D",
-                        fontFamily: "'Philosopher', serif",
-                      }}>
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <TirillaLink orderName={order.order_name} isPickup={order.info?.is_pickup} />
+                  {order.tags.length > 0 && (
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {order.tags.map((tag) => (
+                        <span key={tag} style={{
+                          fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20,
+                          background: "#122F43", color: "#5C84A0", border: "1px solid #24445D",
+                          fontFamily: "'Philosopher', serif",
+                        }}>
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {submitBtn}
+                </div>
               </div>
 
               {/* Datos del pedido (cliente, envío) desde la nota */}
@@ -1319,12 +1581,20 @@ export default function PedidosPage() {
                 for (const item of order.items) {
                   if (isSinProveedor(item.providers)) {
                     sinProveedor.push(item);
-                  } else if (item.providers.length > 1) {
-                    multiples.push(item);
-                  } else {
+                  } else if (item.providers.length === 1) {
                     const key = item.providers[0] ?? "Sin proveedor";
                     if (!singles[key]) singles[key] = [];
                     singles[key].push(item);
+                  } else {
+                    // Multi-proveedor: si The Vault es opción, va con su grupo
+                    // (se prioriza); si no, al grupo "Múltiples proveedores".
+                    const tv = proveedorTheVault(item.providers);
+                    if (tv) {
+                      if (!singles[tv]) singles[tv] = [];
+                      singles[tv].push(item);
+                    } else {
+                      multiples.push(item);
+                    }
                   }
                 }
 
@@ -1410,51 +1680,37 @@ export default function PedidosPage() {
                 padding: "14px 18px", borderRadius: 12, marginBottom: 8,
                 background: "#0E1D2B", border: "1px solid #24445D50",
               }}>
-                <div
-                  onClick={() => setDryRun(!dryRun)}
-                  style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
-                >
-                  <div style={{
-                    width: 40, height: 22, borderRadius: 99,
-                    background: dryRun ? "#B08343" : "#122F43",
-                    position: "relative", transition: "background 0.2s", flexShrink: 0,
-                    border: `1px solid ${dryRun ? "#8F672E" : "#24445D"}`,
-                  }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  {backBtn}
+                  <div
+                    onClick={() => setDryRun(!dryRun)}
+                    style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}
+                  >
                     <div style={{
-                      position: "absolute", top: 3,
-                      left: dryRun ? 20 : 3,
-                      width: 14, height: 14, borderRadius: "50%",
-                      background: "#e8d5b7", transition: "left 0.2s",
-                    }} />
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 13, fontWeight: 700, color: "#e8d5b7", margin: 0, fontFamily: "'Philosopher', serif" }}>
-                      {dryRun ? "Modo simulación" : "Modo real"}
-                    </p>
-                    <p style={{ fontSize: 11, color: "#5C84A0", margin: 0 }}>
-                      {dryRun ? "No se guardarán cambios" : "Se guardarán en metadatos y Excel"}
-                    </p>
+                      width: 40, height: 22, borderRadius: 99,
+                      background: dryRun ? "#B08343" : "#122F43",
+                      position: "relative", transition: "background 0.2s", flexShrink: 0,
+                      border: `1px solid ${dryRun ? "#8F672E" : "#24445D"}`,
+                    }}>
+                      <div style={{
+                        position: "absolute", top: 3,
+                        left: dryRun ? 20 : 3,
+                        width: 14, height: 14, borderRadius: "50%",
+                        background: "#e8d5b7", transition: "left 0.2s",
+                      }} />
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: "#e8d5b7", margin: 0, fontFamily: "'Philosopher', serif" }}>
+                        {dryRun ? "Modo simulación" : "Modo real"}
+                      </p>
+                      <p style={{ fontSize: 11, color: "#5C84A0", margin: 0 }}>
+                        {dryRun ? "No se guardarán cambios" : "Se guardarán en metadatos y Excel"}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                <button
-                  onClick={handleSubmit}
-                  disabled={submitting || isAlistado}
-                  style={{
-                    padding: "10px 28px",
-                    background: submitting || isAlistado ? "#122F43" : dryRun ? "#B08343" : "#8F672E",
-                    color: submitting || isAlistado ? "#5C84A0" : dryRun ? "#0E151D" : "#e8d5b7",
-                    border: `1px solid ${isAlistado ? "#374151" : dryRun ? "#8F672E" : "#6A481C"}`,
-                    borderRadius: 8,
-                    fontFamily: "'Philosopher', serif",
-                    fontWeight: 700, fontSize: 14,
-                    cursor: submitting || isAlistado ? "not-allowed" : "pointer",
-                    opacity: submitting || isAlistado ? 0.5 : 1,
-                    transition: "all 0.2s", whiteSpace: "nowrap",
-                  }}
-                >
-                  {isAlistado ? "🔒 Pedido alistado" : submitting ? "Procesando..." : dryRun ? "▷ Simular gestión" : "✓ Confirmar y guardar"}
-                </button>
+                {submitBtn}
               </div>
             </div>
           </div>
@@ -1551,9 +1807,18 @@ export default function PedidosPage() {
                   gap: 14,
                 }}>
                   {pendingOrders.map((p) => (
-                    <button
+                    <div
                       key={p.order_id}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => { setOrderNumber(p.order_name); fetchOrder(p.order_name); }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setOrderNumber(p.order_name);
+                          fetchOrder(p.order_name);
+                        }
+                      }}
                       style={{
                         textAlign: "left", cursor: "pointer",
                         display: "flex", flexDirection: "column", gap: 8,
@@ -1617,7 +1882,8 @@ export default function PedidosPage() {
                           {formatCOP(p.total)}
                         </span>
                       </div>
-                    </button>
+                      <TirillaLink orderName={p.order_name} isPickup={p.is_pickup} block />
+                    </div>
                   ))}
                 </div>
               )}

@@ -40,6 +40,15 @@ const bots = [
     accent: "#24445D",
     disponible: true,
   },
+  {
+    nombre: "Tirillas de Envío",
+    emoji: "🏷️",
+    descripcion:
+      "Escribe el N° de pedido y genera la etiqueta lista para imprimir: detecta pickup o envío, prellena los datos del cliente (nombre, teléfono y dirección) y te deja revisar y agregar la cédula antes de imprimir.",
+    to: "/app/bots/tirillas",
+    accent: "#5C84A0",
+    disponible: true,
+  },
 ];
 
 export default function BotsHub() {

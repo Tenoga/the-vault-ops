@@ -27,6 +27,8 @@ export async function action({ request }: ActionFunctionArgs) {
   if (letras != null && String(letras).trim() !== "") out.append("letras", String(letras));
   const color = formData.get("color");
   if (color != null && String(color).trim() !== "") out.append("color", String(color));
+  const contraTienda = formData.get("contra_tienda");
+  if (contraTienda != null && String(contraTienda) !== "") out.append("contra_tienda", String(contraTienda));
 
   const response = await fetch(`${API_BASE}/depurador/depurar`, {
     method: "POST",

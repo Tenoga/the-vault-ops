@@ -6,6 +6,8 @@ import {
   COLOR_OPCIONES,
   COLOR_LABEL,
   contextoLabel,
+  cajaEtiqueta,
+  costeTexto,
   validarUbicaciones,
   type Ubicacion,
 } from "../lib/ubicaciones";
@@ -98,31 +100,54 @@ export default function UbicacionesPage() {
   const [ctxColor, setCtxColor] = useState("W");
   const [ctxCmc, setCtxCmc] = useState(1);
   const [ctxCmcOrMas, setCtxCmcOrMas] = useState(false);
+  // "Cualquier coste" = proveedor organizado solo por color (una caja para todo
+  // el color, sin separar por coste). Internamente se guarda como coste 0 + "y
+  // superiores" (que equivale a todos los costes).
+  const [ctxCualquierCoste, setCtxCualquierCoste] = useState(false);
+
+  // Valores efectivos del contexto (aplican el modo "cualquier coste").
+  const efCmc = ctxCualquierCoste ? 0 : ctxCmc;
+  const efCmcOrMas = ctxCualquierCoste ? true : ctxCmcOrMas;
 
   // ── Carga inicial ──────────────────────────────────────────────────────────
+  // Se separan a propósito los dos orígenes: nuestra propia BD (rápida) carga la
+  // página; la lista de proveedores viene del BACKEND y puede estar lenta o
+  // colgada (p. ej. durante un cargue de inventario). Esa segunda llamada NO debe
+  // bloquear la página, así que va aparte, en segundo plano y con timeout; si
+  // falla, el proveedor se puede escribir a mano.
   useEffect(() => {
+    // 1) Datos propios → cargan la página.
     (async () => {
       setLoading(true);
       try {
-        const [uRes, pRes] = await Promise.all([
-          fetch("/api/ubicaciones"),
-          fetch("/api/inventario/proveedores").catch(() => null),
-        ]);
-        const uData = await uRes.json();
-        setRows(toRows(uData.ubicaciones ?? []));
-
-        if (pRes && pRes.ok) {
-          const provs = extraerProveedores(await pRes.json());
-          setProveedores(provs);
-          if (provs.length && !ctxProveedor) setCtxProveedor(provs[0]);
-        }
+        const res = await fetch("/api/ubicaciones");
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error ?? `Error ${res.status}`);
+        setRows(toRows(data?.ubicaciones ?? []));
       } catch (e: any) {
         setError(e?.message ?? "No se pudo cargar la configuración");
       } finally {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    // 2) Proveedores (solo para el autocompletado) → en segundo plano, no bloquea.
+    (async () => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch("/api/inventario/proveedores", { signal: ctrl.signal });
+        if (res.ok) {
+          const provs = extraerProveedores(await res.json());
+          setProveedores(provs);
+          setCtxProveedor((prev) => prev || provs[0] || "");
+        }
+      } catch {
+        /* backend lento/ocupado: se ignora; el proveedor se escribe a mano */
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
   }, []);
 
   // ── Filas del contexto activo ────────────────────────────────────────────────
@@ -133,11 +158,11 @@ export default function UbicacionesPage() {
           (r) =>
             r.proveedor === ctxProveedor &&
             r.color === ctxColor &&
-            r.cmc === ctxCmc &&
-            r.cmcOrMas === ctxCmcOrMas,
+            r.cmc === efCmc &&
+            r.cmcOrMas === efCmcOrMas,
         )
         .sort((a, b) => (a.letraDesde || "").localeCompare(b.letraDesde || "")),
-    [rows, ctxProveedor, ctxColor, ctxCmc, ctxCmcOrMas],
+    [rows, ctxProveedor, ctxColor, efCmc, efCmcOrMas],
   );
 
   // ── Validación global (en vivo) ──────────────────────────────────────────────
@@ -147,8 +172,8 @@ export default function UbicacionesPage() {
     (g) =>
       g.proveedor === ctxProveedor &&
       g.color === ctxColor &&
-      g.cmc === ctxCmc &&
-      g.cmcOrMas === ctxCmcOrMas,
+      g.cmc === efCmc &&
+      g.cmcOrMas === efCmcOrMas,
   );
 
   // ── Mutaciones ───────────────────────────────────────────────────────────────
@@ -170,14 +195,14 @@ export default function UbicacionesPage() {
         key: uid(),
         proveedor: ctxProveedor,
         color: ctxColor,
-        cmc: ctxCmc,
-        cmcOrMas: ctxCmcOrMas,
+        cmc: efCmc,
+        cmcOrMas: efCmcOrMas,
         letraDesde: desde,
         letraHasta: "Z",
         nombre: "",
       },
     ]);
-  }, [ctxProveedor, ctxColor, ctxCmc, ctxCmcOrMas, currentRows, marcarSucio]);
+  }, [ctxProveedor, ctxColor, efCmc, efCmcOrMas, currentRows, marcarSucio]);
 
   const updateRow = useCallback(
     (key: string, patch: Partial<Row>) => {
@@ -268,8 +293,10 @@ export default function UbicacionesPage() {
           <p style={{ fontSize: 13, color: "#5C84A0", marginTop: 6, maxWidth: 720 }}>
             Define dónde está archivada cada carta. Elige un{" "}
             <strong style={{ color: "#8F672E" }}>proveedor · color · coste</strong>{" "}
-            y reparte las letras en cajas. La vista de pedidos mostrará la caja de
-            cada carta automáticamente.
+            y reparte las letras en cajas. En cada caja escribe{" "}
+            <strong style={{ color: "#8F672E" }}>solo el número</strong>; la
+            descripción (proveedor · color · coste · rango) se arma sola. La vista
+            de pedidos mostrará la caja de cada carta automáticamente.
           </p>
         </div>
 
@@ -361,13 +388,14 @@ export default function UbicacionesPage() {
                   </select>
                 </div>
 
-                <div style={{ flex: "0 0 84px" }}>
+                <div style={{ flex: "0 0 84px", opacity: ctxCualquierCoste ? 0.4 : 1 }}>
                   <label style={labelStyle}>Coste (CMC)</label>
                   <input
                     type="number"
                     min={0}
                     max={20}
                     value={ctxCmc}
+                    disabled={ctxCualquierCoste}
                     onChange={(e) => setCtxCmc(Math.max(0, parseInt(e.target.value || "0", 10)))}
                     style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
                   />
@@ -380,17 +408,40 @@ export default function UbicacionesPage() {
                     gap: 6,
                     fontSize: 12,
                     color: "#5C84A0",
-                    cursor: "pointer",
+                    cursor: ctxCualquierCoste ? "not-allowed" : "pointer",
                     paddingBottom: 8,
                     fontFamily: "'Philosopher', serif",
+                    opacity: ctxCualquierCoste ? 0.4 : 1,
                   }}
                 >
                   <input
                     type="checkbox"
                     checked={ctxCmcOrMas}
+                    disabled={ctxCualquierCoste}
                     onChange={(e) => setCtxCmcOrMas(e.target.checked)}
                   />
                   y superiores ({ctxCmc}+)
+                </label>
+
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    color: ctxCualquierCoste ? "#a9ecf5" : "#5C84A0",
+                    cursor: "pointer",
+                    paddingBottom: 8,
+                    fontFamily: "'Philosopher', serif",
+                  }}
+                  title="Para proveedores organizados solo por color: una caja cubre todo el color, sin separar por coste."
+                >
+                  <input
+                    type="checkbox"
+                    checked={ctxCualquierCoste}
+                    onChange={(e) => setCtxCualquierCoste(e.target.checked)}
+                  />
+                  Cualquier coste (solo por color)
                 </label>
               </div>
 
@@ -415,7 +466,7 @@ export default function UbicacionesPage() {
                     }}
                   >
                     Cajas de {ctxProveedor || "—"} · {COLOR_LABEL[ctxColor]} ·{" "}
-                    {ctxCmcOrMas ? `coste ${ctxCmc}+` : `coste ${ctxCmc}`}
+                    {costeTexto(efCmc, efCmcOrMas)}
                   </span>
                   <div style={{ flex: 1, height: 1, background: "#24445D40" }} />
                   {/* Estado de cobertura del contexto */}
@@ -482,14 +533,15 @@ export default function UbicacionesPage() {
                           ))}
                         </select>
 
+                        <span style={{ fontSize: 12, color: "#5C84A0", fontFamily: "'Philosopher', serif", marginLeft: 6 }}>Nº caja</span>
                         <input
                           value={r.nombre}
                           onChange={(e) => updateRow(r.key, { nombre: e.target.value })}
-                          placeholder="Nombre físico (ej. Caja 12)"
+                          placeholder="ej. 2"
                           style={{
                             ...inputStyle,
-                            flex: "1 1 200px",
-                            minWidth: 140,
+                            flex: "0 1 90px",
+                            minWidth: 70,
                             borderColor: r.nombre.trim() ? "#24445D" : "#7f1d1d",
                           }}
                         />
@@ -511,6 +563,18 @@ export default function UbicacionesPage() {
                         >
                           🗑
                         </button>
+
+                        {/* Etiqueta auto-generada: lo que representa la caja. No se
+                            teclea; sale de proveedor·color·coste·rango. */}
+                        <span style={{
+                          flexBasis: "100%",
+                          fontSize: 11,
+                          color: "#5C84A0",
+                          fontFamily: "'Literata', serif",
+                          marginTop: 2,
+                        }}>
+                          {r.nombre.trim() ? `📦 ${r.nombre.trim()} · ` : ""}{cajaEtiqueta(r)}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -594,19 +658,23 @@ export default function UbicacionesPage() {
                   style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 380, overflowY: "auto" }}
                 >
                   {contextos.map((g) => {
+                    const esCualquierCoste = g.cmc === 0 && g.cmcOrMas;
                     const activo =
                       g.proveedor === ctxProveedor &&
                       g.color === ctxColor &&
-                      g.cmc === ctxCmc &&
-                      g.cmcOrMas === ctxCmcOrMas;
+                      g.cmc === efCmc &&
+                      g.cmcOrMas === efCmcOrMas;
                     return (
                       <button
                         key={`${g.proveedor}|${g.color}|${g.cmc}|${g.cmcOrMas}`}
                         onClick={() => {
                           setCtxProveedor(g.proveedor);
                           setCtxColor(g.color);
-                          setCtxCmc(g.cmc);
-                          setCtxCmcOrMas(g.cmcOrMas);
+                          setCtxCualquierCoste(esCualquierCoste);
+                          if (!esCualquierCoste) {
+                            setCtxCmc(g.cmc);
+                            setCtxCmcOrMas(g.cmcOrMas);
+                          }
                         }}
                         style={{
                           textAlign: "left",
